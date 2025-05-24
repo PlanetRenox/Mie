@@ -872,139 +872,222 @@ namespace Fragsurf.Movement {
             return Tracer.TraceCollider(_mover.collider, start, end, layerMask);
         }
 
-        public void Crouch (IMoveControllable mover, MovementConfig config, float deltaTime) {
-
+        /// <summary>
+        /// Handle player crouching and uncrouching
+        /// </summary>
+        /// <param name="mover">The movable entity</param>
+        /// <param name="config">Movement configuration</param>
+        /// <param name="deltaTime">Time since last frame</param>
+        public void Crouch(IMoveControllable mover, MovementConfig config, float deltaTime) {
+            // Cache parameters
             _mover = mover;
             _config = config;
             _deltaTime = deltaTime;
 
-            if (_mover == null)
+            // Early exit checks
+            if (_mover == null || _mover.collider == null) {
                 return;
-
-            if (_mover.collider == null)
-                return;
-
-            bool grounded = _mover.groundObject != null;
-            bool wantsToCrouch = _mover.moveData.crouching;
-
-            float crouchingHeight = Mathf.Clamp (_mover.moveData.crouchingHeight, 0.01f, 1f);
-            float heightDifference = _mover.moveData.defaultHeight - _mover.moveData.defaultHeight * crouchingHeight;
-
-            if (grounded)
-                uncrouchDown = false;
-
-            // Crouching input
-            if (grounded)
-                crouchLerp = Mathf.Lerp (crouchLerp, wantsToCrouch ? 1f : 0f, _deltaTime * _mover.moveData.crouchingSpeed);
-            else if (!grounded && !wantsToCrouch && crouchLerp < 0.95f)
-                crouchLerp = 0f;
-            else if (!grounded && wantsToCrouch)
-                crouchLerp = 1f;
-
-            // Collider and position changing
-            if (crouchLerp > 0.9f && !crouching) {
-                
-                // Begin crouching
-                crouching = true;
-                if (_mover.collider.GetType () == typeof (BoxCollider)) {
-
-                    // Box collider
-                    BoxCollider boxCollider = (BoxCollider)_mover.collider;
-                    boxCollider.size = new Vector3 (boxCollider.size.x, _mover.moveData.defaultHeight * crouchingHeight, boxCollider.size.z);
-
-                } else if (_mover.collider.GetType () == typeof (CapsuleCollider)) {
-
-                    // Capsule collider
-                    CapsuleCollider capsuleCollider = (CapsuleCollider)_mover.collider;
-                    capsuleCollider.height = _mover.moveData.defaultHeight * crouchingHeight;
-
-                }
-
-                // Move position and stuff
-                _mover.moveData.origin += heightDifference / 2 * (grounded ? Vector3.down : Vector3.up);
-                foreach (Transform child in playerTransform) {
-
-                    if (child == _mover.moveData.viewTransform)
-                        continue;
-
-                    child.localPosition = new Vector3 (child.localPosition.x, child.localPosition.y * crouchingHeight, child.localPosition.z);
-
-                }
-
-                uncrouchDown = !grounded;
-
-            } else if (crouching) {
-
-                // Check if the player can uncrouch
-                bool canUncrouch = true;
-                if (_mover.collider.GetType () == typeof (BoxCollider)) {
-
-                    // Box collider
-                    BoxCollider boxCollider = (BoxCollider)_mover.collider;
-                    Vector3 halfExtents = boxCollider.size * 0.5f;
-                    Vector3 startPos = boxCollider.transform.position;
-                    Vector3 endPos = boxCollider.transform.position + (uncrouchDown ? Vector3.down : Vector3.up) * heightDifference;
-
-                    Trace trace = Tracer.TraceBox (startPos, endPos, halfExtents, boxCollider.contactOffset, MovePhysics.groundLayerMask);
-
-                    if (trace.hitCollider != null)
-                        canUncrouch = false;
-
-                } else if (_mover.collider.GetType () == typeof (CapsuleCollider)) {
-
-                    // Capsule collider
-                    CapsuleCollider capsuleCollider = (CapsuleCollider)_mover.collider;
-                    Vector3 point1 = capsuleCollider.center + Vector3.up * capsuleCollider.height * 0.5f;
-                    Vector3 point2 = capsuleCollider.center + Vector3.down * capsuleCollider.height * 0.5f;
-                    Vector3 startPos = capsuleCollider.transform.position;
-                    Vector3 endPos = capsuleCollider.transform.position + (uncrouchDown ? Vector3.down : Vector3.up) * heightDifference;
-
-                    Trace trace = Tracer.TraceCapsule (point1, point2, capsuleCollider.radius, startPos, endPos, capsuleCollider.contactOffset, MovePhysics.groundLayerMask);
-
-                    if (trace.hitCollider != null)
-                        canUncrouch = false;
-
-                }
-
-                // Uncrouch
-                if (canUncrouch && crouchLerp <= 0.9f) {
-
-                    crouching = false;
-                    if (_mover.collider.GetType () == typeof (BoxCollider)) {
-
-                        // Box collider
-                        BoxCollider boxCollider = (BoxCollider)_mover.collider;
-                        boxCollider.size = new Vector3 (boxCollider.size.x, _mover.moveData.defaultHeight, boxCollider.size.z);
-
-                    } else if (_mover.collider.GetType () == typeof (CapsuleCollider)) {
-
-                        // Capsule collider
-                        CapsuleCollider capsuleCollider = (CapsuleCollider)_mover.collider;
-                        capsuleCollider.height = _mover.moveData.defaultHeight;
-
-                    }
-
-                    // Move position and stuff
-                    _mover.moveData.origin += heightDifference / 2 * (uncrouchDown ? Vector3.down : Vector3.up);
-                    foreach (Transform child in playerTransform) {
-
-                        child.localPosition = new Vector3 (child.localPosition.x, child.localPosition.y / crouchingHeight, child.localPosition.z);
-
-                    }
-
-                }
-
-                if (!canUncrouch)
-                    crouchLerp = 1f;
-
             }
 
-            // Changing camera position
-            if (!crouching)
-                _mover.moveData.viewTransform.localPosition = Vector3.Lerp (_mover.moveData.viewTransformDefaultLocalPos, _mover.moveData.viewTransformDefaultLocalPos * crouchingHeight + Vector3.down * heightDifference * 0.5f, crouchLerp);
-            else
-                _mover.moveData.viewTransform.localPosition = Vector3.Lerp (_mover.moveData.viewTransformDefaultLocalPos - Vector3.down * heightDifference * 0.5f, _mover.moveData.viewTransformDefaultLocalPos * crouchingHeight, crouchLerp);
+            // Get current state
+            bool grounded = _mover.groundObject != null;
+            bool wantsToCrouch = _mover.moveData.crouching;
+            float crouchingHeight = Mathf.Clamp(_mover.moveData.crouchingHeight, 0.01f, 1f);
+            float heightDifference = _mover.moveData.defaultHeight * (1f - crouchingHeight);
 
+            // Reset uncrouch direction when grounded
+            if (grounded) {
+                uncrouchDown = false;
+            }
+
+            // Update crouch lerp value
+            UpdateCrouchLerp(grounded, wantsToCrouch);
+
+            // Handle crouch state changes
+            if (crouchLerp > 0.9f && !crouching) {
+                // Start crouching
+                BeginCrouch(crouchingHeight, heightDifference, grounded);
+            } 
+            else if (crouching) {
+                // Check if uncrouching is possible
+                bool canUncrouch = CanUncrouch(heightDifference);
+                
+                // Attempt to uncrouch
+                if (canUncrouch && crouchLerp <= 0.9f) {
+                    EndCrouch(crouchingHeight, heightDifference);
+                }
+                
+                // Force crouch if unable to uncrouch
+                if (!canUncrouch) {
+                    crouchLerp = 1f;
+                }
+            }
+
+            // Update camera position
+            UpdateCameraPosition(crouchingHeight, heightDifference);
+        }
+
+        /// <summary>
+        /// Update the crouch lerp value based on input and state
+        /// </summary>
+        private void UpdateCrouchLerp(bool grounded, bool wantsToCrouch) {
+            if (grounded) {
+                // Smooth crouch transition when grounded
+                crouchLerp = Mathf.Lerp(
+                    crouchLerp, 
+                    wantsToCrouch ? 1f : 0f, 
+                    _deltaTime * _mover.moveData.crouchingSpeed
+                );
+            } 
+            else if (!wantsToCrouch && crouchLerp < 0.95f) {
+                // Instant uncrouch in air if not forcing crouch
+                crouchLerp = 0f;
+            } 
+            else if (wantsToCrouch) {
+                // Instant crouch in air if requesting crouch
+                crouchLerp = 1f;
+            }
+        }
+
+        /// <summary>
+        /// Begin crouching state
+        /// </summary>
+        private void BeginCrouch(float crouchingHeight, float heightDifference, bool grounded) {
+            crouching = true;
+            
+            // Adjust collider based on type
+            if (_mover.collider is BoxCollider) {
+                BoxCollider boxCollider = (BoxCollider)_mover.collider;
+                boxCollider.size = new Vector3(
+                    boxCollider.size.x, 
+                    _mover.moveData.defaultHeight * crouchingHeight, 
+                    boxCollider.size.z
+                );
+            } 
+            else if (_mover.collider is CapsuleCollider) {
+                CapsuleCollider capsuleCollider = (CapsuleCollider)_mover.collider;
+                capsuleCollider.height = _mover.moveData.defaultHeight * crouchingHeight;
+            }
+
+            // Adjust position - move down when grounded, up when in air
+            _mover.moveData.origin += heightDifference * 0.5f * (grounded ? vectorDown : vectorUp);
+            
+            // Adjust child objects' positions except view
+            foreach (Transform child in playerTransform) {
+                if (child == _mover.moveData.viewTransform) {
+                    continue;
+                }
+                child.localPosition = new Vector3(
+                    child.localPosition.x, 
+                    child.localPosition.y * crouchingHeight, 
+                    child.localPosition.z
+                );
+            }
+
+            // Set uncrouch direction
+            uncrouchDown = !grounded;
+        }
+
+        /// <summary>
+        /// Check if player can uncrouch without hitting anything
+        /// </summary>
+        private bool CanUncrouch(float heightDifference) {
+            if (_mover.collider is BoxCollider) {
+                // Box collider check
+                BoxCollider boxCollider = (BoxCollider)_mover.collider;
+                Vector3 halfExtents = boxCollider.size * 0.5f;
+                Vector3 startPos = boxCollider.transform.position;
+                Vector3 endPos = startPos + (uncrouchDown ? vectorDown : vectorUp) * heightDifference;
+
+                Trace trace = Tracer.TraceBox(
+                    startPos, 
+                    endPos, 
+                    halfExtents, 
+                    boxCollider.contactOffset, 
+                    MovePhysics.groundLayerMask
+                );
+
+                return trace.hitCollider == null;
+            } 
+            else if (_mover.collider is CapsuleCollider) {
+                // Capsule collider check
+                CapsuleCollider capsuleCollider = (CapsuleCollider)_mover.collider;
+                Vector3 point1 = capsuleCollider.center + vectorUp * capsuleCollider.height * 0.5f;
+                Vector3 point2 = capsuleCollider.center + vectorDown * capsuleCollider.height * 0.5f;
+                Vector3 startPos = capsuleCollider.transform.position;
+                Vector3 endPos = startPos + (uncrouchDown ? vectorDown : vectorUp) * heightDifference;
+
+                Trace trace = Tracer.TraceCapsule(
+                    point1, 
+                    point2, 
+                    capsuleCollider.radius, 
+                    startPos, 
+                    endPos, 
+                    capsuleCollider.contactOffset, 
+                    MovePhysics.groundLayerMask
+                );
+
+                return trace.hitCollider == null;
+            }
+            
+            // Default to false for unsupported collider types
+            return false;
+        }
+
+        /// <summary>
+        /// End crouching state
+        /// </summary>
+        private void EndCrouch(float crouchingHeight, float heightDifference) {
+            crouching = false;
+            
+            // Adjust collider based on type
+            if (_mover.collider is BoxCollider) {
+                BoxCollider boxCollider = (BoxCollider)_mover.collider;
+                boxCollider.size = new Vector3(
+                    boxCollider.size.x, 
+                    _mover.moveData.defaultHeight, 
+                    boxCollider.size.z
+                );
+            } 
+            else if (_mover.collider is CapsuleCollider) {
+                CapsuleCollider capsuleCollider = (CapsuleCollider)_mover.collider;
+                capsuleCollider.height = _mover.moveData.defaultHeight;
+            }
+
+            // Adjust position
+            _mover.moveData.origin += heightDifference * 0.5f * (uncrouchDown ? vectorDown : vectorUp);
+            
+            // Restore child objects' positions
+            foreach (Transform child in playerTransform) {
+                if (crouchingHeight > 0.0001f) { // Avoid division by zero
+                    child.localPosition = new Vector3(
+                        child.localPosition.x, 
+                        child.localPosition.y / crouchingHeight, 
+                        child.localPosition.z
+                    );
+                }
+            }
+        }
+
+        /// <summary>
+        /// Update camera position during crouch/uncrouch
+        /// </summary>
+        private void UpdateCameraPosition(float crouchingHeight, float heightDifference) {
+            if (!crouching) {
+                // Lerping from standing to crouching view position
+                _mover.moveData.viewTransform.localPosition = Vector3.Lerp(
+                    _mover.moveData.viewTransformDefaultLocalPos, 
+                    _mover.moveData.viewTransformDefaultLocalPos * crouchingHeight + vectorDown * heightDifference * 0.5f, 
+                    crouchLerp
+                );
+            } else {
+                // Lerping from crouching to standing view position
+                _mover.moveData.viewTransform.localPosition = Vector3.Lerp(
+                    _mover.moveData.viewTransformDefaultLocalPos - vectorDown * heightDifference * 0.5f, 
+                    _mover.moveData.viewTransformDefaultLocalPos * crouchingHeight, 
+                    crouchLerp
+                );
+            }
         }
 
         /// <summary>
