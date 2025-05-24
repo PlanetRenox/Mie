@@ -217,12 +217,20 @@ namespace Fragsurf.Movement {
         }
 
         private void Update () {
-
-            _colliderObject.transform.rotation = Quaternion.identity;
-
-
-            //UpdateTestBinds ();
+            // Update input data every frame for responsive controls
+            UpdateTestBinds ();
             UpdateMoveData ();
+            
+            // Check for camera being underwater
+            _moveData.cameraUnderwater = _cameraWaterCheck.IsUnderwater ();
+            _cameraWaterCheckObject.transform.position = viewTransform.position;
+            
+            // Ensure collider rotation is maintained
+            _colliderObject.transform.rotation = Quaternion.identity;
+        }
+        
+        private void FixedUpdate () {
+            _colliderObject.transform.rotation = Quaternion.identity;
             
             // Previous movement code
             Vector3 positionalMovement = transform.position - prevPosition;
@@ -247,20 +255,17 @@ namespace Fragsurf.Movement {
 
             }
 
-            _moveData.cameraUnderwater = _cameraWaterCheck.IsUnderwater ();
-            _cameraWaterCheckObject.transform.position = viewTransform.position;
             moveData.underwater = underwater;
             
             if (allowCrouch)
-                _controller.Crouch (this, movementConfig, Time.deltaTime);
+                _controller.Crouch (this, movementConfig, Time.fixedDeltaTime);
 
-            _controller.ProcessMovement (this, movementConfig, Time.deltaTime);
+            _controller.ProcessMovement (this, movementConfig, Time.fixedDeltaTime);
 
             transform.position = moveData.origin;
             prevPosition = transform.position;
 
             _colliderObject.transform.rotation = Quaternion.identity;
-
         }
         
         private void UpdateTestBinds () {

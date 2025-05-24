@@ -47,7 +47,7 @@ namespace Fragsurf.Movement {
             if (_mover.moveData.laddersEnabled && !_mover.moveData.climbingLadder) {
 
                 // Look for ladders
-                LadderCheck (new Vector3(1f, 0.95f, 1f), _mover.moveData.velocity * Mathf.Clamp (Time.deltaTime * 2f, 0.025f, 0.25f));
+                LadderCheck (new Vector3(1f, 0.95f, 1f), _mover.moveData.velocity * Mathf.Clamp (_deltaTime * 2f, 0.025f, 0.25f));
 
             }
             
@@ -375,7 +375,7 @@ namespace Fragsurf.Movement {
             
             _mover.moveData.ladderVelocity = _mover.moveData.ladderClimbDir * _mover.moveData.verticalAxis * 6f;
 
-            _mover.moveData.velocity = Vector3.Lerp (_mover.moveData.velocity, _mover.moveData.ladderVelocity, Time.deltaTime * 10f);
+            _mover.moveData.velocity = Vector3.Lerp (_mover.moveData.velocity, _mover.moveData.ladderVelocity, _deltaTime * 10f);
 
             LadderCheck (Vector3.one, _mover.moveData.ladderDirection);
             
