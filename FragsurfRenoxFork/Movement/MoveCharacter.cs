@@ -218,7 +218,7 @@ namespace Fragsurf.Movement {
 
         private void Update () {
             // Update input data every frame for responsive controls
-            //UpdateTestBinds ();
+            UpdateTestBinds ();
             UpdateMoveData ();
             
             // Check for camera being underwater
