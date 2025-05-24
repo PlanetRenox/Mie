@@ -2,7 +2,7 @@
 
 namespace Fragsurf.Movement {
 
-    public interface ISurfControllable {
+    public interface IMoveControllable {
 
         MoveType moveType { get; }
         MoveData moveData { get; }

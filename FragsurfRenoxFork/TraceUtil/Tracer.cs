@@ -24,7 +24,7 @@ namespace Fragsurf.TraceUtil {
                 var capc = (CapsuleCollider)collider;
 
                 Vector3 point1, point2;
-                Movement.SurfPhysics.GetCapsulePoints (capc, origin, out point1, out point2);
+                Movement.MovePhysics.GetCapsulePoints (capc, origin, out point1, out point2);
 
                 return TraceCapsule (point1, point2, capc.radius, origin, end, capc.contactOffset, layerMask, colliderScale);
 
