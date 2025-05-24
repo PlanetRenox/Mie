@@ -18,7 +18,7 @@ namespace Fragsurf.Movement {
         private const int maxClipPlanes = 5;
         private const int numBumps = 1;
 
-        public const float SurfSlope = 0.7f;
+        public const float MoveSlope = 0.7f;
 
         ///// Methods /////
 
@@ -314,7 +314,7 @@ namespace Fragsurf.Movement {
 
                 // If the plane we hit has a high z component in the normal, then
                 //  it's probably a floor
-                if (trace.planeNormal.y > SurfSlope)
+                if (trace.planeNormal.y > MoveSlope)
                     blocked |= 1;       // floor
 
                 // If the plane has a zero z component in the normal, then it's a 
@@ -351,7 +351,7 @@ namespace Fragsurf.Movement {
 
                     for (int i = 0; i < numplanes; i++) {
 
-                        if (_planes [i] [1] > SurfSlope) {
+                        if (_planes [i] [1] > MoveSlope) {
 
                             // floor or slope
                             return blocked;
