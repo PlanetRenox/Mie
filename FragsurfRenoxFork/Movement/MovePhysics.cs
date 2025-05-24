@@ -11,8 +11,11 @@ namespace Fragsurf.Movement {
         /// </summary>
         public static int groundLayerMask = LayerMask.GetMask (new string[] { "Default", "Ground", "Player clip" }); //(1 << 0);
 
-        private static Collider[] _colliders = new Collider [maxCollisions];
-        private static Vector3[] _planes = new Vector3 [maxClipPlanes];
+        private static readonly Collider[] _colliders = new Collider[maxCollisions];
+        private static readonly Vector3[] _planes = new Vector3[maxClipPlanes];
+        // Pre-cached vector to avoid allocation in hot paths
+        private static readonly Vector3 horizontalPlane = new Vector3(1f, 0f, 1f);
+        
         public const float HU2M = 52.4934383202f;
         private const int maxCollisions = 128;
         private const int maxClipPlanes = 5;
@@ -23,19 +26,25 @@ namespace Fragsurf.Movement {
         ///// Methods /////
 
         /// <summary>
-        /// 
+        /// Resolves collisions between a collider and the environment
         /// </summary>
-        /// <param name="collider"></param>
-        /// <param name="origin"></param>
-        /// <param name="velocity"></param>
+        /// <param name="collider">The collider to check</param>
+        /// <param name="origin">The origin position, will be modified if collision occurs</param>
+        /// <param name="velocity">The velocity, will be modified if collision occurs</param>
+        /// <param name="rigidbodyPushForce">Force applied to rigidbodies on collision</param>
+        /// <param name="velocityMultiplier">Multiplier for velocity changes</param>
+        /// <param name="stepOffset">Maximum height of steps that can be climbed</param>
+        /// <param name="mover">The move controllable entity</param>
         /// http://www.00jknight.com/blog/unity-character-controller
         
         public static void ResolveCollisions (Collider collider, ref Vector3 origin, ref Vector3 velocity, float rigidbodyPushForce, float velocityMultiplier = 1f, float stepOffset = 0f, IMoveControllable mover = null) {
+            // Early exit if velocity is zero - no collision possible
+            if (velocity.sqrMagnitude <= 0.0001f)
+                return;
 
             // manual collision resolving
             int numOverlaps = 0;
             if (collider is CapsuleCollider) {
-
                 var capc = collider as CapsuleCollider;
 
                 Vector3 point1, point2;
@@ -43,56 +52,65 @@ namespace Fragsurf.Movement {
 
                 numOverlaps = Physics.OverlapCapsuleNonAlloc (point1, point2, capc.radius,
                     _colliders, groundLayerMask, QueryTriggerInteraction.Ignore);
-
             } else if (collider is BoxCollider) {
-
                 numOverlaps = Physics.OverlapBoxNonAlloc (origin, collider.bounds.extents, _colliders,
                     Quaternion.identity, groundLayerMask, QueryTriggerInteraction.Ignore);
-
             }
 
-            Vector3 forwardVelocity = Vector3.Scale (velocity, new Vector3 (1f, 0f, 1f));
+            // Early exit if no overlaps
+            if (numOverlaps == 0)
+                return;
+
+            // Pre-calculate horizontal velocity components once before the loop
+            Vector3 forwardVelocity = Vector3.Scale(velocity, horizontalPlane);
+            
             for (int i = 0; i < numOverlaps; i++) {
+                if (_colliders[i] == null)
+                    continue;
 
                 Vector3 direction;
                 float distance;
 
                 if (Physics.ComputePenetration (collider, origin,
-                    Quaternion.identity, _colliders [i], _colliders [i].transform.position,
-                    _colliders [i].transform.rotation, out direction, out distance)) {
+                    Quaternion.identity, _colliders[i], _colliders[i].transform.position,
+                    _colliders[i].transform.rotation, out direction, out distance)) {
                     
-                    // Step offset
-                    if (stepOffset > 0f && mover != null && mover.moveData.useStepOffset)
-                        if (StepOffset (collider, _colliders [i], ref origin, ref velocity, rigidbodyPushForce, velocityMultiplier, stepOffset, direction, distance, forwardVelocity, mover))
+                    // Step offset - only check if actually needed
+                    if (stepOffset > 0f && mover != null && mover.moveData.useStepOffset) {
+                        if (StepOffset (collider, _colliders[i], ref origin, ref velocity, rigidbodyPushForce, velocityMultiplier, stepOffset, direction, distance, forwardVelocity, mover))
                             return;
+                    }
 
-                    // Handle collision
-                    direction.Normalize ();
-                    Vector3 penetrationVector = direction * distance;
-                    Vector3 velocityProjected = Vector3.Project (velocity, -direction);
-                    velocityProjected.y = 0; // don't touch y velocity, we need it to calculate fall damage elsewhere
-                    origin += penetrationVector;
-                    velocity -= velocityProjected * velocityMultiplier;
+                    // Handle collision - normalize just once and cache results
+                    if (direction.sqrMagnitude > 0.0001f) {
+                        direction.Normalize();
+                        
+                        // Calculate these vectors once and reuse
+                        Vector3 penetrationVector = direction * distance;
+                        Vector3 velocityProjected = Vector3.Project(velocity, -direction);
+                        velocityProjected.y = 0; // don't touch y velocity, we need it to calculate fall damage elsewhere
+                        
+                        // Apply collision response
+                        origin += penetrationVector;
+                        velocity -= velocityProjected * velocityMultiplier;
 
-                    Rigidbody rb = _colliders [i].GetComponentInParent<Rigidbody> ();
-                    if (rb != null && !rb.isKinematic)
-                        rb.AddForceAtPosition (velocityProjected * velocityMultiplier * rigidbodyPushForce, origin, ForceMode.Impulse);
-
+                        // Handle rigidbody interaction
+                        Rigidbody rb = _colliders[i].GetComponentInParent<Rigidbody>();
+                        if (rb != null && !rb.isKinematic)
+                            rb.AddForceAtPosition(velocityProjected * velocityMultiplier * rigidbodyPushForce, origin, ForceMode.Impulse);
+                    }
                 }
-
             }
-
         }
 
         public static bool StepOffset (Collider collider, Collider otherCollider, ref Vector3 origin, ref Vector3 velocity, float rigidbodyPushForce, float velocityMultiplier, float stepOffset, Vector3 direction, float distance, Vector3 forwardVelocity, IMoveControllable mover) {
-
             // Return if step offset is 0
             if (stepOffset <= 0f)
                 return false;
 
             // Get forward direction (return if we aren't moving/are only moving vertically)
             Vector3 forwardDirection = forwardVelocity.normalized;
-            if (forwardDirection.sqrMagnitude == 0f)
+            if (forwardDirection.sqrMagnitude < 0.0001f)
                 return false;
 
             // Trace ground
@@ -100,14 +118,18 @@ namespace Fragsurf.Movement {
             if (groundTrace.hitCollider == null || Vector3.Angle (Vector3.up, groundTrace.planeNormal) > mover.moveData.slopeLimit)
                 return false;
 
+            // Cache slope limit check since it's reused later
+            float slopeLimit = mover.moveData.slopeLimit;
+            float stepOffsetValue = stepOffset; // Cache to avoid property access
+
             // Trace wall
             Trace wallTrace = Tracer.TraceCollider (collider, origin, origin + velocity, groundLayerMask, 0.9f);
-            if (wallTrace.hitCollider == null || Vector3.Angle (Vector3.up, wallTrace.planeNormal) <= mover.moveData.slopeLimit)
+            if (wallTrace.hitCollider == null || Vector3.Angle (Vector3.up, wallTrace.planeNormal) <= slopeLimit)
                 return false;
 
             // Trace upwards (check for roof etc)
-            float upDistance = stepOffset;
-            Trace upTrace = Tracer.TraceCollider (collider, origin, origin + Vector3.up * stepOffset, groundLayerMask);
+            float upDistance = stepOffsetValue;
+            Trace upTrace = Tracer.TraceCollider (collider, origin, origin + Vector3.up * stepOffsetValue, groundLayerMask);
             if (upTrace.hitCollider != null)
                 upDistance = upTrace.distance;
 
@@ -118,7 +140,7 @@ namespace Fragsurf.Movement {
             Vector3 upOrigin = origin + Vector3.up * upDistance;
 
             // Trace forwards (check for walls etc)
-            float forwardMagnitude = stepOffset;
+            float forwardMagnitude = stepOffsetValue;
             float forwardDistance = forwardMagnitude;
             Trace forwardTrace = Tracer.TraceCollider (collider, upOrigin, upOrigin + forwardDirection * Mathf.Max (0.2f, forwardMagnitude), groundLayerMask);
             if (forwardTrace.hitCollider != null)
@@ -137,373 +159,282 @@ namespace Fragsurf.Movement {
                 downDistance = downTrace.distance;
 
             // Check step size/angle
-            float verticalStep = Mathf.Clamp (upDistance - downDistance, 0f, stepOffset);
+            float verticalStep = Mathf.Clamp (upDistance - downDistance, 0f, stepOffsetValue);
             float horizontalStep = forwardDistance;
             float stepAngle = Vector3.Angle (Vector3.forward, new Vector3 (0f, verticalStep, horizontalStep));
-            if (stepAngle > mover.moveData.slopeLimit)
+            if (stepAngle > slopeLimit)
                 return false;
 
             // Get new position
             Vector3 endOrigin = origin + Vector3.up * verticalStep;
             
             // Actually move
-            if (origin != endOrigin && forwardDistance > 0f) {
-
-                Debug.Log ("Moved up step!");
+            if (!Mathf.Approximately(origin.y, endOrigin.y) && forwardDistance > 0f) {
                 origin = endOrigin + forwardDirection * forwardDistance * Time.deltaTime;
                 return true;
-
-            } else
-                return false;
-
+            } 
+            return false;
         }
 
         /// <summary>
-        /// 
+        /// Apply friction to movement
         /// </summary>
         public static void Friction (ref Vector3 velocity, float stopSpeed, float friction, float deltaTime) {
+            float speed = velocity.magnitude;
 
-            var speed = velocity.magnitude;
-
+            // Early exit if speed is too low
             if (speed < 0.0001905f)
                 return;
 
-            var drop = 0f;
+            float drop = 0f;
 
-            // apply ground friction
-            var control = (speed < stopSpeed) ? stopSpeed : speed;
+            // Apply ground friction
+            float control = (speed < stopSpeed) ? stopSpeed : speed;
             drop += control * friction * deltaTime;
 
-            // scale the velocity
-            var newspeed = speed - drop;
+            // Scale the velocity
+            float newspeed = speed - drop;
             if (newspeed < 0)
                 newspeed = 0;
 
-            if (newspeed != speed) {
-
+            // Apply velocity scaling
+            if (!Mathf.Approximately(newspeed, speed)) {
                 newspeed /= speed;
                 velocity *= newspeed;
+            }
+        }
 
+        /// <summary>
+        /// Apply air acceleration to movement
+        /// </summary>
+        /// <param name="velocity">Current velocity vector</param>
+        /// <param name="wishdir">Desired movement direction</param>
+        /// <param name="wishspeed">Desired movement speed</param>
+        /// <param name="accel">Acceleration factor</param>
+        /// <param name="airCap">Max air speed</param>
+        /// <param name="deltaTime">Time since last frame</param>
+        /// <returns>Vector3 acceleration to add</returns>
+        public static Vector3 AirAccelerate (Vector3 velocity, Vector3 wishdir, float wishspeed, float accel, float airCap, float deltaTime) {
+            // Cap max speed
+            float wishspd = Mathf.Min(wishspeed, airCap);
+            
+            // Calculate dot product once
+            float currentspeed = Vector3.Dot(velocity, wishdir);
+
+            // Calculate remaining speed
+            float addspeed = wishspd - currentspeed;
+
+            // If not adding any speed, return zero vector
+            if (addspeed <= 0)
+                return Vector3.zero;
+
+            // Calculate acceleration
+            float accelspeed = Mathf.Min(accel * wishspeed * deltaTime, addspeed);
+
+            // Create result vector multiplied by wishdir
+            return wishdir * accelspeed;
+        }
+
+        /// <summary>
+        /// Accelerate the velocity in the desired direction
+        /// </summary>
+        /// <param name="currentVelocity">Current velocity vector</param>
+        /// <param name="wishdir">Desired movement direction</param>
+        /// <param name="wishspeed">Desired movement speed</param>
+        /// <param name="accel">Acceleration factor</param>
+        /// <param name="deltaTime">Time since last frame</param>
+        /// <param name="surfaceFriction">Friction from the current surface</param>
+        /// <returns>Vector3 acceleration to add</returns>
+        public static Vector3 Accelerate (Vector3 currentVelocity, Vector3 wishdir, float wishspeed, float accel, float deltaTime, float surfaceFriction) {
+            // Calculate dot product once
+            float currentspeed = Vector3.Dot(currentVelocity, wishdir);
+
+            // Calculate remaining speed
+            float addspeed = wishspeed - currentspeed;
+
+            // If not adding any speed, return zero vector
+            if (addspeed <= 0)
+                return Vector3.zero;
+
+            // Calculate acceleration with friction factored in
+            float accelspeed = Mathf.Min(accel * deltaTime * wishspeed * surfaceFriction, addspeed);
+
+            // Return result vector multiplied by wishdir
+            return wishdir * accelspeed;
+        }
+
+        /// <summary>
+        /// Handle velocity reflection when colliding with surfaces
+        /// </summary>
+        /// <param name="velocity">Current velocity vector to be modified</param>
+        /// <param name="collider">Collider to check collisions</param>
+        /// <param name="origin">Current position</param>
+        /// <param name="deltaTime">Time since last frame</param>
+        /// <returns>Blocking flags</returns>
+        public static int Reflect (ref Vector3 velocity, Collider collider, Vector3 origin, float deltaTime) {
+            if (velocity.sqrMagnitude < 0.0001f) {
+                return 0; // No need to reflect if not moving
             }
 
-        }
+            Vector3 newVelocity = Vector3.zero;
+            int blocked = 0;           // Assume not blocked
+            int numplanes = 0;         // And not sliding along any planes
+            Vector3 originalVelocity = velocity;  // Store original velocity
+            Vector3 primalVelocity = velocity;
 
-        /// <summary>
-        /// 
-        /// </summary>
-        /// <param name="velocity"></param>
-        /// <param name="wishdir"></param>
-        /// <param name="wishspeed"></param>
-        /// <param name="accel"></param>
-        /// <param name="airCap"></param>
-        /// <param name="deltaTime"></param>
-        /// <returns></returns>
-        public static Vector3 AirAccelerate (Vector3 velocity, Vector3 wishdir, float wishspeed, float accel, float airCap, float deltaTime) {
-
-            var wishspd = wishspeed;
-
-            // Cap speed
-            wishspd = Mathf.Min (wishspd, airCap);
-
-            // Determine veer amount
-            var currentspeed = Vector3.Dot (velocity, wishdir);
-
-            // See how much to add
-            var addspeed = wishspd - currentspeed;
-
-            // If not adding any, done.
-            if (addspeed <= 0)
-                return Vector3.zero;
-
-            // Determine acceleration speed after acceleration
-            var accelspeed = accel * wishspeed * deltaTime;
-
-            // Cap it
-            accelspeed = Mathf.Min (accelspeed, addspeed);
-
-            var result = Vector3.zero;
-
-            // Adjust pmove vel.
-            for (int i = 0; i < 3; i++)
-                result [i] += accelspeed * wishdir [i];
-
-            return result;
-
-        }
-
-        /// <summary>
-        /// 
-        /// </summary>
-        /// <param name="wishdir"></param>
-        /// <param name="wishspeed"></param>
-        /// <param name="accel"></param>
-        /// <returns></returns>
-        public static Vector3 Accelerate (Vector3 currentVelocity, Vector3 wishdir, float wishspeed, float accel, float deltaTime, float surfaceFriction) {
-
-            // See if we are changing direction a bit
-            var currentspeed = Vector3.Dot (currentVelocity, wishdir);
-
-            // Reduce wishspeed by the amount of veer.
-            var addspeed = wishspeed - currentspeed;
-
-            // If not going to add any speed, done.
-            if (addspeed <= 0)
-                return Vector3.zero;
-
-            // Determine amount of accleration.
-            var accelspeed = accel * deltaTime * wishspeed * surfaceFriction;
-
-            // Cap at addspeed
-            if (accelspeed > addspeed)
-                accelspeed = addspeed;
-
-            var result = Vector3.zero;
-
-            // Adjust velocity.
-            for (int i = 0; i < 3; i++)
-                result [i] += accelspeed * wishdir [i];
-            
-            return result;
-
-        }
-
-        /// <summary>
-        /// 
-        /// </summary>
-        /// <param name="velocity"></param>
-        /// <param name="origin"></param>
-        /// <param name="firstDestination"></param>
-        /// <param name="firstTrace"></param>
-        /// <returns></returns>
-        public static int Reflect (ref Vector3 velocity, Collider collider, Vector3 origin, float deltaTime) {
-
-            float d;
-            var newVelocity = Vector3.zero;
-            var blocked = 0;           // Assume not blocked
-            var numplanes = 0;           //  and not sliding along any planes
-            var originalVelocity = velocity;  // Store original velocity
-            var primalVelocity = velocity;
-
-            var allFraction = 0f;
-            var timeLeft = deltaTime;   // Total time for this movement operation.
+            float allFraction = 0f;
+            float timeLeft = deltaTime;   // Total time for this movement operation.
 
             for (int bumpcount = 0; bumpcount < numBumps; bumpcount++) {
-
-                if (velocity.magnitude == 0f)
+                if (velocity.sqrMagnitude < 0.0001f)
                     break;
 
-                // Assume we can move all the way from the current origin to the
-                //  end point.
-                var end = VectorExtensions.VectorMa (origin, timeLeft, velocity);
-                var trace = Tracer.TraceCollider (collider, origin, end, groundLayerMask);
+                // Assume we can move all the way from the current origin to the destination
+                Vector3 end = origin + velocity * timeLeft;
+                Trace trace = Tracer.TraceCollider(collider, origin, end, groundLayerMask);
 
                 allFraction += trace.fraction;
 
                 if (trace.fraction > 0) {
-
-                    // actually covered some distance
+                    // Actually covered some distance
                     originalVelocity = velocity;
                     numplanes = 0;
-
                 }
 
                 // If we covered the entire distance, we are done
-                //  and can return.
                 if (trace.fraction == 1)
-                    break;      // moved the entire distance
-
-                // If the plane we hit has a high z component in the normal, then
-                //  it's probably a floor
-                if (trace.planeNormal.y > MoveSlope)
-                    blocked |= 1;       // floor
-
-                // If the plane has a zero z component in the normal, then it's a 
-                //  step or wall
-                if (trace.planeNormal.y == 0)
-                    blocked |= 2;       // step / wall
-
-                // Reduce amount of m_flFrameTime left by total time left * fraction
-                //  that we covered.
-                timeLeft -= timeLeft * trace.fraction;
-
-                // Did we run out of planes to clip against?
-                if (numplanes >= maxClipPlanes) {
-
-                    // this shouldn't really happen
-                    //  Stop our movement if so.
-                    velocity = Vector3.zero;
-                    //Con_DPrintf("Too many planes 4\n");
                     break;
 
+                // Check what kind of plane we hit
+                float yNormal = trace.planeNormal.y;
+                
+                // If the plane has a high y component, it's probably a floor
+                if (yNormal > MoveSlope)
+                    blocked |= 1;      // Floor
+                
+                // If the plane has zero y component, it's a step or wall
+                if (Mathf.Approximately(yNormal, 0))
+                    blocked |= 2;      // Step/wall
+
+                // Reduce time remaining by time used
+                timeLeft -= timeLeft * trace.fraction;
+
+                // Too many planes to clip against?
+                if (numplanes >= maxClipPlanes) {
+                    // This shouldn't normally happen
+                    velocity = Vector3.zero;
+                    break;
                 }
 
                 // Set up next clipping plane
-                _planes [numplanes] = trace.planeNormal;
+                _planes[numplanes] = trace.planeNormal;
                 numplanes++;
 
-                // modify original_velocity so it parallels all of the clip planes
-                //
-
-                // reflect player velocity 
-                // Only give this a try for first impact plane because you can get yourself stuck in an acute corner by jumping in place
-                //  and pressing forward and nobody was really using this bounce/reflection feature anyway...
+                // Only try reflection for first impact plane
                 if (numplanes == 1) {
-
-                    for (int i = 0; i < numplanes; i++) {
-
-                        if (_planes [i] [1] > MoveSlope) {
-
-                            // floor or slope
-                            return blocked;
-                            //ClipVelocity(originalVelocity, _planes[i], ref newVelocity, 1f);
-                            //originalVelocity = newVelocity;
-
-                        } else
-                            ClipVelocity (originalVelocity, _planes [i], ref newVelocity, 1f);
-
+                    // If normal has slope, it's floor or slope
+                    if (_planes[0].y > MoveSlope) {
+                        return blocked;
+                    } else {
+                        // Otherwise clip velocity to reflect off the surface
+                        ClipVelocity(originalVelocity, _planes[0], ref newVelocity, 1f);
                     }
-
+                    
                     velocity = newVelocity;
                     originalVelocity = newVelocity;
-
                 } else {
+                    // Handle multiple reflection planes
+                    for (int i = 0; i < numplanes; i++) {
+                        ClipVelocity(originalVelocity, _planes[i], ref velocity, 1);
 
-                    int i = 0;
-                    for (i = 0; i < numplanes; i++) {
-
-                        ClipVelocity (originalVelocity, _planes [i], ref velocity, 1);
-
-                        int j = 0;
-
-                        for (j = 0; j < numplanes; j++) {
+                        // Check if the clipped velocity goes through any other planes
+                        bool valid = true;
+                        for (int j = 0; j < numplanes && valid; j++) {
                             if (j != i) {
-
-                                // Are we now moving against this plane?
-                                if (Vector3.Dot (velocity, _planes [j]) < 0)
-                                    break;
-
+                                if (Vector3.Dot(velocity, _planes[j]) < 0)
+                                    valid = false;
                             }
                         }
 
-                        if (j == numplanes)  // Didn't have to clip, so we're ok
+                        if (valid)
                             break;
-
                     }
 
-                    // Did we go all the way through plane set
-                    if (i != numplanes) {   // go along this plane
-                        // pmove.velocity is set in clipping call, no need to set again.
-                        ;
-                    } else {   // go along the crease
-
-                        if (numplanes != 2) {
-
+                    // If we couldn't find a valid reflection solution
+                    if (numplanes > 1) {
+                        // Try to find a direction along the crease between planes
+                        if (numplanes == 2) {
+                            Vector3 dir = Vector3.Cross(_planes[0], _planes[1]).normalized;
+                            float d = Vector3.Dot(dir, velocity);
+                            velocity = dir * d;
+                        } else {
                             velocity = Vector3.zero;
                             break;
-
                         }
-
-                        var dir = Vector3.Cross (_planes [0], _planes [1]).normalized;
-                        d = Vector3.Dot (dir, velocity);
-                        velocity = dir * d;
-
+                        
+                        // If moving against original direction, stop
+                        if (Vector3.Dot(velocity, primalVelocity) <= 0f) {
+                            velocity = Vector3.zero;
+                            break;
+                        }
                     }
-
-                    //
-                    // if original velocity is against the original velocity, stop dead
-                    // to avoid tiny occilations in sloping corners
-                    //
-                    d = Vector3.Dot (velocity, primalVelocity);
-                    if (d <= 0f) {
-
-                        //Con_DPrintf("Back\n");
-                        velocity = Vector3.zero;
-                        break;
-
-                    }
-
                 }
-
             }
 
-            if (allFraction == 0f)
+            // If we couldn't move at all, zero the velocity
+            if (allFraction < 0.0001f)
                 velocity = Vector3.zero;
 
-            // Check if they slammed into a wall
-            //float fSlamVol = 0.0f;
-
-            //var primal2dLen = new Vector2(primal_velocity.x, primal_velocity.z).magnitude;
-            //var vel2dLen = new Vector2(_moveData.Velocity.x, _moveData.Velocity.z).magnitude;
-            //float fLateralStoppingAmount = primal2dLen - vel2dLen;
-            //if (fLateralStoppingAmount > PLAYER_MAX_SAFE_FALL_SPEED * 2.0f)
-            //{
-            //    fSlamVol = 1.0f;
-            //}
-            //else if (fLateralStoppingAmount > PLAYER_MAX_SAFE_FALL_SPEED)
-            //{
-            //    fSlamVol = 0.85f;
-            //}
-
-            //PlayerRoughLandingEffects(fSlamVol);
-
             return blocked;
         }
 
         /// <summary>
-        /// 
+        /// Clip velocity against a collision plane
         /// </summary>
-        /// <param name="input"></param>
-        /// <param name="normal"></param>
-        /// <param name="output"></param>
-        /// <param name="overbounce"></param>
-        /// <returns></returns>
-        public static int ClipVelocity (Vector3 input, Vector3 normal, ref Vector3 output, float overbounce) {
+        /// <param name="input">Input velocity</param>
+        /// <param name="normal">Normal of the collision plane</param>
+        /// <param name="output">Output clipped velocity</param>
+        /// <param name="overbounce">Bounce factor</param>
+        /// <returns>Blocking flags</returns>
+        public static int ClipVelocity(Vector3 input, Vector3 normal, ref Vector3 output, float overbounce) {
+            float angle = normal.y;
+            int blocked = 0x00;     // Assume unblocked.
 
-            var angle = normal [1];
-            var blocked = 0x00;     // Assume unblocked.
+            if (angle > 0)          // Floor
+                blocked |= 0x01;
+                
+            if (Mathf.Approximately(angle, 0))  // Wall/step
+                blocked |= 0x02;
+                
+            // Calculate reflection using dot product
+            float backoff = Vector3.Dot(input, normal) * overbounce;
 
-            if (angle > 0)          // If the plane that is blocking us has a positive z component, then assume it's a floor.
-                blocked |= 0x01;    // 
+            // Reflect velocity along the normal
+            output = input - normal * backoff;
 
-            if (angle == 0)         // If the plane has no Z, it is vertical (wall/step)
-                blocked |= 0x02;    // 
-
-            // Determine how far along plane to slide based on incoming direction.
-            var backoff = Vector3.Dot (input, normal) * overbounce;
-
-            for (int i = 0; i < 3; i++) {
-
-                var change = normal [i] * backoff;
-                output [i] = input [i] - change;
-
-            }
-
-            // iterate once to make sure we aren't still moving through the plane
-            float adjust = Vector3.Dot (output, normal);
+            // Ensure we're not still moving through the plane
+            float adjust = Vector3.Dot(output, normal);
             if (adjust < 0.0f) {
-
-                output -= (normal * adjust);
-                //		Msg( "Adjustment = %lf\n", adjust );
-
+                output -= normal * adjust;
             }
 
-            // Return blocking flags.
             return blocked;
-
         }
 
         /// <summary>
-        /// 
+        /// Calculate the top and bottom points of a capsule collider
         /// </summary>
-        /// <param name="p1"></param>
-        /// <param name="p2"></param>
-        public static void GetCapsulePoints (CapsuleCollider capc, Vector3 origin, out Vector3 p1, out Vector3 p2) {
-
-            var distanceToPoints = capc.height / 2f - capc.radius;
+        /// <param name="capc">The capsule collider</param>
+        /// <param name="origin">The origin position</param>
+        /// <param name="p1">Output parameter for the top point</param>
+        /// <param name="p2">Output parameter for the bottom point</param>
+        public static void GetCapsulePoints(CapsuleCollider capc, Vector3 origin, out Vector3 p1, out Vector3 p2) {
+            // Pre-calculate the distance to points
+            float distanceToPoints = capc.height * 0.5f - capc.radius;
+            
+            // Calculate points directly using the cached value
             p1 = origin + capc.center + Vector3.up * distanceToPoints;
             p2 = origin + capc.center - Vector3.up * distanceToPoints;
-
         }
-
     }
 }
