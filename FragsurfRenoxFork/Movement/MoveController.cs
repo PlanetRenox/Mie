@@ -30,736 +30,1106 @@ namespace Fragsurf.Movement {
 
         private float frictionMult = 1f;
 
+        // Static vectors to reduce allocations in hot paths
+        private static readonly Vector3 vectorUp = Vector3.up;
+        private static readonly Vector3 vectorDown = Vector3.down;
+        private static readonly Vector3 horizontalPlane = new Vector3(1f, 0f, 1f);
+
         ///// Methods /////
 
         Vector3 groundNormal = Vector3.up;
 
         /// <summary>
-        /// 
+        /// Process movement for the controllable entity
         /// </summary>
-        public void ProcessMovement (IMoveControllable mover, MovementConfig config, float deltaTime) {
+        /// <param name="mover">Entity to move</param>
+        /// <param name="config">Movement configuration</param>
+        /// <param name="deltaTime">Time since last frame</param>
+        public void ProcessMovement(IMoveControllable mover, MovementConfig config, float deltaTime) {
+            // Early exit if any parameter is null
+            if (mover == null || config == null || deltaTime <= 0) {
+                return;
+            }
             
-            // cache instead of passing around parameters
+            // Cache parameters to avoid repeated passing
             _mover = mover;
             _config = config;
             _deltaTime = deltaTime;
             
-            if (_mover.moveData.laddersEnabled && !_mover.moveData.climbingLadder) {
-
-                // Look for ladders
-                LadderCheck (new Vector3(1f, 0.95f, 1f), _mover.moveData.velocity * Mathf.Clamp (_deltaTime * 2f, 0.025f, 0.25f));
-
+            // Handle ladder detection if enabled
+            if (_mover.moveData.laddersEnabled) {
+                ProcessLadders();
             }
             
-            if (_mover.moveData.laddersEnabled && _mover.moveData.climbingLadder) {
-                
-                LadderPhysics ();
-                
-            } else if (!_mover.moveData.underwater) {
-
-                if (_mover.moveData.velocity.y <= 0f)
-                    jumping = false;
-
-                // apply gravity
-                if (_mover.groundObject == null) {
-
-                    _mover.moveData.velocity.y -= (_mover.moveData.gravityFactor * _config.gravity * _deltaTime);
-                    _mover.moveData.velocity.y += _mover.baseVelocity.y * _deltaTime;
-
-                }
-                
-                // input velocity, check for ground
-                CheckGrounded ();
-                CalculateMovementVelocity ();
-                
-            } else {
-
-                // Do underwater logic
-                UnderwaterPhysics ();
-
+            // Choose movement processing based on environment
+            if (_mover.moveData.underwater) {
+                UnderwaterPhysics();
+            }
+            else if (!_mover.moveData.climbingLadder) {
+                // Regular movement processing
+                ProcessRegularMovement();
             }
 
-            float yVel = _mover.moveData.velocity.y;
-            _mover.moveData.velocity.y = 0f;
-            _mover.moveData.velocity = Vector3.ClampMagnitude (_mover.moveData.velocity, _config.maxVelocity);
-            speed =  _mover.moveData.velocity.magnitude;
-            _mover.moveData.velocity.y = yVel;
-            
-            if (_mover.moveData.velocity.sqrMagnitude == 0f) {
+            // Apply velocity clamping and collisions
+            ProcessVelocityAndCollisions();
 
-                // Do collisions while standing still
-                MovePhysics.ResolveCollisions (_mover.collider, ref _mover.moveData.origin, ref _mover.moveData.velocity, _mover.moveData.rigidbodyPushForce, 1f, _mover.moveData.stepOffset, _mover);
-
-            } else {
-
-                float maxDistPerFrame = 0.2f;
-                Vector3 velocityThisFrame = _mover.moveData.velocity * _deltaTime;
-                float velocityDistLeft = velocityThisFrame.magnitude;
-                float initialVel = velocityDistLeft;
-                while (velocityDistLeft > 0f) {
-
-                    float amountThisLoop = Mathf.Min (maxDistPerFrame, velocityDistLeft);
-                    velocityDistLeft -= amountThisLoop;
-
-                    // increment origin
-                    Vector3 velThisLoop = velocityThisFrame * (amountThisLoop / initialVel);
-                    _mover.moveData.origin += velThisLoop;
-
-                    // don't penetrate walls
-                    MovePhysics.ResolveCollisions (_mover.collider, ref _mover.moveData.origin, ref _mover.moveData.velocity, _mover.moveData.rigidbodyPushForce, amountThisLoop / initialVel, _mover.moveData.stepOffset, _mover);
-
-                }
-
-            }
-
+            // Save previous grounded state
             _mover.moveData.groundedTemp = _mover.moveData.grounded;
 
+            // Clear mover reference to avoid holding references
             _mover = null;
-            
         }
 
         /// <summary>
-        /// 
+        /// Process ladder detection and movement
         /// </summary>
-        private void CalculateMovementVelocity () {
-            switch (_mover.moveType) {
-
-                case MoveType.Walk:
-
-                if (_mover.groundObject == null) {
-
-                    /*
-                    // AIR MOVEMENT
-                    */
-
-                    wasSliding = false;
-
-                    // apply movement from input
-                    _mover.moveData.velocity += AirInputMovement ();
-
-                    // let the magic happen
-                    MovePhysics.Reflect (ref _mover.moveData.velocity, _mover.collider, _mover.moveData.origin, _deltaTime);
-
-                } else {
-
-                    /*
-                    //  GROUND MOVEMENT
-                    */
-
-                    // Sliding
-                    if (!wasSliding) {
-
-                        slideDirection = new Vector3 (_mover.moveData.velocity.x, 0f, _mover.moveData.velocity.z).normalized;
-                        slideSpeedCurrent = Mathf.Max (_config.maximumSlideSpeed, new Vector3 (_mover.moveData.velocity.x, 0f, _mover.moveData.velocity.z).magnitude);
-
-                    }
-
-                    sliding = false;
-                    if (_mover.moveData.velocity.magnitude > _config.minimumSlideSpeed && _mover.moveData.slidingEnabled && _mover.moveData.crouching && slideDelay <= 0f) {
-
-                        if (!wasSliding)
-                            slideSpeedCurrent = Mathf.Clamp (slideSpeedCurrent * _config.slideSpeedMultiplier, _config.minimumSlideSpeed, _config.maximumSlideSpeed);
-
-                        sliding = true;
-                        wasSliding = true;
-                        SlideMovement ();
-                        return;
-
-                    } else {
-
-                        if (slideDelay > 0f)
-                            slideDelay -= _deltaTime;
-
-                        if (wasSliding)
-                            slideDelay = _config.slideDelay;
-
-                        wasSliding = false;
-
-                    }
-                    
-                    float fric = crouching ? _config.crouchFriction : _config.friction;
-                    float accel = crouching ? _config.crouchAcceleration : _config.acceleration;
-                    float decel = crouching ? _config.crouchDeceleration : _config.deceleration;
-                    
-                    // Get movement directions
-                    Vector3 forward = Vector3.Cross (groundNormal, -playerTransform.right);
-                    Vector3 right = Vector3.Cross (groundNormal, forward);
-
-                    float speed = _mover.moveData.sprinting ? _config.sprintSpeed : _config.walkSpeed;
-                    if (crouching)
-                        speed = _config.crouchSpeed;
-
-                    Vector3 _wishDir;
-
-                    // Jump and friction
-                    if (_mover.moveData.wishJump) {
-
-                        ApplyFriction (0.0f, true, true);
-                        Jump ();
-                        return;
-
-                    } else {
-
-                        ApplyFriction (1.0f * frictionMult, true, true);
-
-                    }
-
-                    float forwardMove = _mover.moveData.verticalAxis;
-                    float rightMove = _mover.moveData.horizontalAxis;
-
-                    _wishDir = forwardMove * forward + rightMove * right;
-                    _wishDir.Normalize ();
-                    Vector3 moveDirNorm = _wishDir;
-
-                    Vector3 forwardVelocity = Vector3.Cross (groundNormal, Quaternion.AngleAxis (-90, Vector3.up) * new Vector3 (_mover.moveData.velocity.x, 0f, _mover.moveData.velocity.z));
-
-                    // Set the target speed of the player
-                    float _wishSpeed = _wishDir.magnitude;
-                    _wishSpeed *= speed;
-
-                    // Accelerate
-                    float yVel = _mover.moveData.velocity.y;
-                    Accelerate (_wishDir, _wishSpeed, accel * Mathf.Min (frictionMult, 1f), false);
-
-                    float maxVelocityMagnitude = _config.maxVelocity;
-                    _mover.moveData.velocity = Vector3.ClampMagnitude (new Vector3 (_mover.moveData.velocity.x, 0f, _mover.moveData.velocity.z), maxVelocityMagnitude);
-                    _mover.moveData.velocity.y = yVel;
-
-                    // Calculate how much slopes should affect movement
-                    float yVelocityNew = forwardVelocity.normalized.y * new Vector3 (_mover.moveData.velocity.x, 0f, _mover.moveData.velocity.z).magnitude;
-
-                    // Apply the Y-movement from slopes
-                    _mover.moveData.velocity.y = yVelocityNew * (_wishDir.y < 0f ? 1.2f : 1.0f);
-                    float removableYVelocity = _mover.moveData.velocity.y - yVelocityNew;
-
-                }
-
-                break;
-
-            } // END OF SWITCH STATEMENT
+        private void ProcessLadders() {
+            if (!_mover.moveData.climbingLadder) {
+                // Look for ladders when not already climbing
+                Vector3 scaledVelocity = _mover.moveData.velocity * Mathf.Clamp(_deltaTime * 2f, 0.025f, 0.25f);
+                LadderCheck(new Vector3(1f, 0.95f, 1f), scaledVelocity);
+            } else {
+                // Already on ladder, process ladder physics
+                LadderPhysics();
+            }
         }
 
-        private void UnderwaterPhysics () {
+        /// <summary>
+        /// Process regular (non-underwater, non-ladder) movement
+        /// </summary>
+        private void ProcessRegularMovement() {
+            // Reset jumping state when falling
+            if (_mover.moveData.velocity.y <= 0f) {
+                jumping = false;
+            }
 
-            _mover.moveData.velocity = Vector3.Lerp (_mover.moveData.velocity, Vector3.zero, _config.underwaterVelocityDampening * _deltaTime);
+            // Apply gravity when not grounded
+            if (_mover.groundObject == null) {
+                float gravity = _config.gravity * _deltaTime * _mover.moveData.gravityFactor;
+                _mover.moveData.velocity.y -= gravity;
+                _mover.moveData.velocity.y += _mover.baseVelocity.y * _deltaTime;
+            }
+            
+            // Update ground state and calculate movement
+            CheckGrounded();
+            CalculateMovementVelocity();
+        }
 
-            // Gravity
-            if (!CheckGrounded ())
-                _mover.moveData.velocity.y -= _config.underwaterGravity * _deltaTime;
+        /// <summary>
+        /// Process velocity clamping and collision handling
+        /// </summary>
+        private void ProcessVelocityAndCollisions() {
+            // Cache the y component of velocity for restoration after horizontal clamping
+            float yVel = _mover.moveData.velocity.y;
+            
+            // Temporarily zero out y for horizontal magnitude calculation
+            _mover.moveData.velocity.y = 0f;
+            
+            // Clamp horizontal velocity magnitude
+            _mover.moveData.velocity = Vector3.ClampMagnitude(_mover.moveData.velocity, _config.maxVelocity);
+            
+            // Store overall speed for external use
+            speed = _mover.moveData.velocity.magnitude;
+            
+            // Restore the y component
+            _mover.moveData.velocity.y = yVel;
+            
+            // Handle collisions based on whether the player is moving
+            if (_mover.moveData.velocity.sqrMagnitude < 0.0001f) {
+                // Handle collisions when stationary
+                MovePhysics.ResolveCollisions(
+                    _mover.collider, 
+                    ref _mover.moveData.origin, 
+                    ref _mover.moveData.velocity, 
+                    _mover.moveData.rigidbodyPushForce, 
+                    1f, 
+                    _mover.moveData.stepOffset, 
+                    _mover
+                );
+            } else {
+                // Process movement in small steps to avoid tunneling
+                ProcessMovementWithCollisions();
+            }
+        }
 
-            // Swimming upwards
-            if (Input.GetButton ("Jump"))
-                _mover.moveData.velocity.y += _config.swimUpSpeed * _deltaTime;
+        /// <summary>
+        /// Process movement in small steps to handle collisions
+        /// </summary>
+        private void ProcessMovementWithCollisions() {
+            const float maxDistPerFrame = 0.2f;
+            
+            // Calculate velocity for this frame
+            Vector3 velocityThisFrame = _mover.moveData.velocity * _deltaTime;
+            float velocityDistLeft = velocityThisFrame.magnitude;
+            
+            // Early exit if no movement
+            if (velocityDistLeft < 0.0001f) {
+                return;
+            }
+            
+            float initialVel = velocityDistLeft;
+            
+            // Process movement in small chunks
+            while (velocityDistLeft > 0f) {
+                // Calculate amount to move in this iteration
+                float amountThisLoop = Mathf.Min(maxDistPerFrame, velocityDistLeft);
+                velocityDistLeft -= amountThisLoop;
 
-            float fric = _config.underwaterFriction;
-            float accel = _config.underwaterAcceleration;
-            float decel = _config.underwaterDeceleration;
+                // Calculate the proportion of velocity to apply
+                float ratio = amountThisLoop / initialVel;
+                
+                // Apply movement for this step
+                Vector3 velThisLoop = velocityThisFrame * ratio;
+                _mover.moveData.origin += velThisLoop;
 
-            ApplyFriction (1f, true, false);
+                // Handle collisions for this movement step
+                MovePhysics.ResolveCollisions(
+                    _mover.collider, 
+                    ref _mover.moveData.origin, 
+                    ref _mover.moveData.velocity, 
+                    _mover.moveData.rigidbodyPushForce, 
+                    ratio, 
+                    _mover.moveData.stepOffset, 
+                    _mover
+                );
+            }
+        }
 
+        /// <summary>
+        /// Calculate movement velocity based on input and environment
+        /// </summary>
+        private void CalculateMovementVelocity() {
+            switch (_mover.moveType) {
+                case MoveType.Walk:
+                    if (_mover.groundObject == null) {
+                        // AIR MOVEMENT
+                        ProcessAirMovement();
+                    } else {
+                        // GROUND MOVEMENT
+                        ProcessGroundMovement();
+                    }
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// Process movement while in the air
+        /// </summary>
+        private void ProcessAirMovement() {
+            // Reset sliding state
+            wasSliding = false;
+
+            // Apply air movement from input
+            _mover.moveData.velocity += AirInputMovement();
+
+            // Handle collision reflection
+            MovePhysics.Reflect(ref _mover.moveData.velocity, _mover.collider, _mover.moveData.origin, _deltaTime);
+        }
+
+        /// <summary>
+        /// Process movement while on the ground
+        /// </summary>
+        private void ProcessGroundMovement() {
+            // Check for sliding
+            if (ShouldStartSliding()) {
+                SlideMovement();
+                return;
+            }
+
+            // Update slide delay if needed
+            UpdateSlideDelay();
+
+            // Calculate friction and acceleration based on crouch state
+            float friction = crouching ? _config.crouchFriction : _config.friction;
+            float acceleration = crouching ? _config.crouchAcceleration : _config.deceleration;
+            
             // Get movement directions
-            Vector3 forward = Vector3.Cross (groundNormal, -playerTransform.right);
-            Vector3 right = Vector3.Cross (groundNormal, forward);
+            Vector3 forward = Vector3.Cross(groundNormal, -playerTransform.right);
+            Vector3 right = Vector3.Cross(groundNormal, forward);
 
-            float speed = _config.underwaterSwimSpeed;
+            // Calculate speed based on movement state
+            float moveSpeed = CalculateMoveSpeed();
 
-            Vector3 _wishDir;
+            // Check for jumping
+            if (_mover.moveData.wishJump) {
+                ApplyFriction(0.0f, true, true);
+                Jump();
+                return;
+            } else {
+                ApplyFriction(1.0f * frictionMult, true, true);
+            }
 
+            // Calculate wish direction from input
+            Vector3 wishDir = CalculateWishDirection(forward, right);
+            
+            // Set the target speed
+            float wishSpeed = wishDir.magnitude * moveSpeed;
+
+            // Store vertical velocity for restoring after horizontal acceleration
+            float yVel = _mover.moveData.velocity.y;
+            
+            // Apply acceleration in the desired direction
+            Accelerate(wishDir, wishSpeed, acceleration * Mathf.Min(frictionMult, 1f), false);
+
+            // Clamp horizontal velocity
+            _mover.moveData.velocity = Vector3.ClampMagnitude(
+                new Vector3(_mover.moveData.velocity.x, 0f, _mover.moveData.velocity.z), 
+                _config.maxVelocity
+            );
+            
+            // Restore vertical velocity
+            _mover.moveData.velocity.y = yVel;
+
+            // Apply slope effects
+            ApplySlopeEffects(wishDir);
+        }
+        
+        /// <summary>
+        /// Check if player should start sliding
+        /// </summary>
+        private bool ShouldStartSliding() {
+            // Update slide direction if not already sliding
+            if (!wasSliding) {
+                Vector3 horizontalVelocity = Vector3.Scale(_mover.moveData.velocity, horizontalPlane);
+                slideDirection = horizontalVelocity.normalized;
+                slideSpeedCurrent = Mathf.Max(_config.maximumSlideSpeed, horizontalVelocity.magnitude);
+            }
+
+            // Check if conditions for sliding are met
+            sliding = false;
+            if (_mover.moveData.velocity.magnitude > _config.minimumSlideSpeed && 
+                _mover.moveData.slidingEnabled && 
+                _mover.moveData.crouching && 
+                slideDelay <= 0f) {
+                
+                // Initialize slide speed if starting a new slide
+                if (!wasSliding) {
+                    slideSpeedCurrent = Mathf.Clamp(
+                        slideSpeedCurrent * _config.slideSpeedMultiplier, 
+                        _config.minimumSlideSpeed, 
+                        _config.maximumSlideSpeed
+                    );
+                }
+
+                sliding = true;
+                wasSliding = true;
+                return true;
+            }
+            
+            return false;
+        }
+        
+        /// <summary>
+        /// Update slide delay timer
+        /// </summary>
+        private void UpdateSlideDelay() {
+            if (slideDelay > 0f) {
+                slideDelay -= _deltaTime;
+            }
+            
+            if (wasSliding) {
+                slideDelay = _config.slideDelay;
+                wasSliding = false;
+            }
+        }
+        
+        /// <summary>
+        /// Calculate movement speed based on player state
+        /// </summary>
+        private float CalculateMoveSpeed() {
+            if (_mover.moveData.sprinting) {
+                return _config.sprintSpeed;
+            } else if (crouching) {
+                return _config.crouchSpeed;
+            } else {
+                return _config.walkSpeed;
+            }
+        }
+        
+        /// <summary>
+        /// Calculate wish direction from input
+        /// </summary>
+        private Vector3 CalculateWishDirection(Vector3 forward, Vector3 right) {
             float forwardMove = _mover.moveData.verticalAxis;
             float rightMove = _mover.moveData.horizontalAxis;
 
-            _wishDir = forwardMove * forward + rightMove * right;
-            _wishDir.Normalize ();
-            Vector3 moveDirNorm = _wishDir;
-
-            Vector3 forwardVelocity = Vector3.Cross (groundNormal, Quaternion.AngleAxis (-90, Vector3.up) * new Vector3 (_mover.moveData.velocity.x, 0f, _mover.moveData.velocity.z));
-
-            // Set the target speed of the player
-            float _wishSpeed = _wishDir.magnitude;
-            _wishSpeed *= speed;
-
-            // Accelerate
-            float yVel = _mover.moveData.velocity.y;
-            Accelerate (_wishDir, _wishSpeed, accel, false);
-
-            float maxVelocityMagnitude = _config.maxVelocity;
-            _mover.moveData.velocity = Vector3.ClampMagnitude (new Vector3 (_mover.moveData.velocity.x, 0f, _mover.moveData.velocity.z), maxVelocityMagnitude);
-            _mover.moveData.velocity.y = yVel;
-
-            float yVelStored = _mover.moveData.velocity.y;
-            _mover.moveData.velocity.y = 0f;
-
-            // Calculate how much slopes should affect movement
-            float yVelocityNew = forwardVelocity.normalized.y * new Vector3 (_mover.moveData.velocity.x, 0f, _mover.moveData.velocity.z).magnitude;
-
-            // Apply the Y-movement from slopes
-            _mover.moveData.velocity.y = Mathf.Min (Mathf.Max (0f, yVelocityNew) + yVelStored, speed);
-
-            // Jumping out of water
-            bool movingForwards = playerTransform.InverseTransformVector (_mover.moveData.velocity).z > 0f;
-            Trace waterJumpTrace = TraceBounds (playerTransform.position, playerTransform.position + playerTransform.forward * 0.1f, MovePhysics.groundLayerMask);
-            if (waterJumpTrace.hitCollider != null && Vector3.Angle (Vector3.up, waterJumpTrace.planeNormal) >= _config.slopeLimit && Input.GetButton ("Jump") && !_mover.moveData.cameraUnderwater && movingForwards)
-                _mover.moveData.velocity.y = Mathf.Max (_mover.moveData.velocity.y, _config.jumpForce);
-
+            Vector3 wishDir = (forwardMove * forward + rightMove * right).normalized;
+            return wishDir;
         }
         
-        private void LadderCheck (Vector3 colliderScale, Vector3 direction) {
-
-            if (_mover.moveData.velocity.sqrMagnitude <= 0f)
-                return;
+        /// <summary>
+        /// Apply effects of moving on slopes
+        /// </summary>
+        private void ApplySlopeEffects(Vector3 wishDir) {
+            // Calculate forward velocity on the slope
+            Vector3 horizontalVelocity = new Vector3(_mover.moveData.velocity.x, 0f, _mover.moveData.velocity.z);
+            Vector3 forwardVelocity = Vector3.Cross(
+                groundNormal, 
+                Quaternion.AngleAxis(-90, Vector3.up) * horizontalVelocity
+            );
             
-            bool foundLadder = false;
+            // Calculate how slopes should affect Y velocity
+            float yVelocityNew = forwardVelocity.normalized.y * horizontalVelocity.magnitude;
 
-            RaycastHit [] hits = Physics.BoxCastAll (_mover.moveData.origin, Vector3.Scale (_mover.collider.bounds.size * 0.5f, colliderScale), Vector3.Scale (direction, new Vector3 (1f, 0f, 1f)), Quaternion.identity, direction.magnitude, MovePhysics.groundLayerMask, QueryTriggerInteraction.Collide);
-            foreach (RaycastHit hit in hits) {
-
-                Ladder ladder = hit.transform.GetComponentInParent<Ladder> ();
-                if (ladder != null) {
-
-                    bool allowClimb = true;
-                    float ladderAngle = Vector3.Angle (Vector3.up, hit.normal);
-                    if (_mover.moveData.angledLaddersEnabled) {
-
-                        if (hit.normal.y < 0f)
-                            allowClimb = false;
-                        else {
-                            
-                            if (ladderAngle <= _mover.moveData.slopeLimit)
-                                allowClimb = false;
-
-                        }
-
-                    } else if (hit.normal.y != 0f)
-                        allowClimb = false;
-
-                    if (allowClimb) {
-                        foundLadder = true;
-                        if (_mover.moveData.climbingLadder == false) {
-
-                            _mover.moveData.climbingLadder = true;
-                            _mover.moveData.ladderNormal = hit.normal;
-                            _mover.moveData.ladderDirection = -hit.normal * direction.magnitude * 2f;
-
-                            if (_mover.moveData.angledLaddersEnabled) {
-
-                                Vector3 sideDir = hit.normal;
-                                sideDir.y = 0f;
-                                sideDir = Quaternion.AngleAxis (-90f, Vector3.up) * sideDir;
-
-                                _mover.moveData.ladderClimbDir = Quaternion.AngleAxis (90f, sideDir) * hit.normal;
-                                _mover.moveData.ladderClimbDir *= 1f/ _mover.moveData.ladderClimbDir.y; // Make sure Y is always 1
-
-                            } else
-                                _mover.moveData.ladderClimbDir = Vector3.up;
-                            
-                        }
-                        
-                    }
-
-                }
-
-            }
-
-            if (!foundLadder) {
-                
-                _mover.moveData.ladderNormal = Vector3.zero;
-                _mover.moveData.ladderVelocity = Vector3.zero;
-                _mover.moveData.climbingLadder = false;
-                _mover.moveData.ladderClimbDir = Vector3.up;
-
-            }
-
+            // Apply slope Y-velocity with a boost when moving downhill
+            float downhillFactor = wishDir.y < 0f ? 1.2f : 1.0f;
+            _mover.moveData.velocity.y = yVelocityNew * downhillFactor;
         }
 
-        private void LadderPhysics () {
+        /// <summary>
+        /// Handle underwater physics and movement
+        /// </summary>
+        private void UnderwaterPhysics() {
+            // Apply velocity damping when underwater
+            _mover.moveData.velocity = Vector3.Lerp(
+                _mover.moveData.velocity, 
+                Vector3.zero, 
+                _config.underwaterVelocityDampening * _deltaTime
+            );
+
+            // Apply underwater gravity when not grounded
+            if (!CheckGrounded()) {
+                _mover.moveData.velocity.y -= _config.underwaterGravity * _deltaTime;
+            }
+
+            // Allow swimming upwards when jump button is pressed
+            if (Input.GetButton("Jump")) {
+                _mover.moveData.velocity.y += _config.swimUpSpeed * _deltaTime;
+            }
+
+            // Apply underwater friction
+            ApplyFriction(1f, true, false);
+
+            // Calculate movement directions
+            Vector3 forward = Vector3.Cross(groundNormal, -playerTransform.right);
+            Vector3 right = Vector3.Cross(groundNormal, forward);
+
+            // Calculate wish direction from input
+            float forwardMove = _mover.moveData.verticalAxis;
+            float rightMove = _mover.moveData.horizontalAxis;
             
+            Vector3 wishDir = (forwardMove * forward + rightMove * right).normalized;
+            
+            // Calculate forward velocity on slope
+            Vector3 horizontalVelocity = new Vector3(_mover.moveData.velocity.x, 0f, _mover.moveData.velocity.z);
+            Vector3 forwardVelocity = Vector3.Cross(
+                groundNormal, 
+                Quaternion.AngleAxis(-90, Vector3.up) * horizontalVelocity
+            );
+
+            // Set target speed and accelerate
+            float wishSpeed = wishDir.magnitude * _config.underwaterSwimSpeed;
+
+            // Cache y velocity for restoration after horizontal acceleration
+            float yVel = _mover.moveData.velocity.y;
+            
+            // Apply acceleration
+            Accelerate(wishDir, wishSpeed, _config.underwaterAcceleration, false);
+
+            // Clamp horizontal velocity
+            _mover.moveData.velocity = Vector3.ClampMagnitude(horizontalPlane, _config.maxVelocity);
+            
+            // Restore vertical velocity
+            _mover.moveData.velocity.y = yVel;
+
+            // Calculate and apply slope effects
+            ApplyUnderwaterSlopeEffects(forwardVelocity, yVel);
+
+            // Handle jumping out of water
+            CheckWaterJump();
+        }
+        
+        /// <summary>
+        /// Apply slope effects when underwater
+        /// </summary>
+        private void ApplyUnderwaterSlopeEffects(Vector3 forwardVelocity, float yVel) {
+            // Calculate horizontal velocity
+            Vector3 horizontalVelocity = new Vector3(_mover.moveData.velocity.x, 0f, _mover.moveData.velocity.z);
+            
+            // Calculate slope Y contribution
+            float slopeYVelocity = 0;
+            if (forwardVelocity.normalized.sqrMagnitude > 0.0001f) {
+                slopeYVelocity = forwardVelocity.normalized.y * horizontalVelocity.magnitude;
+            }
+            
+            // Apply Y-velocity with slope contribution, but only add positive slope effects
+            _mover.moveData.velocity.y = Mathf.Min(
+                Mathf.Max(0f, slopeYVelocity) + yVel, 
+                _config.underwaterSwimSpeed
+            );
+        }
+        
+        /// <summary>
+        /// Check if player can jump out of water
+        /// </summary>
+        private void CheckWaterJump() {
+            // Only allow jumping when moving forward and jump is pressed
+            bool movingForwards = playerTransform.InverseTransformVector(_mover.moveData.velocity).z > 0f;
+            if (!movingForwards || !Input.GetButton("Jump") || _mover.moveData.cameraUnderwater) {
+                return;
+            }
+            
+            // Check for surface ahead to jump onto
+            Trace waterJumpTrace = TraceBounds(
+                playerTransform.position, 
+                playerTransform.position + playerTransform.forward * 0.1f, 
+                MovePhysics.groundLayerMask
+            );
+            
+            // Apply jump force if hitting a steep enough surface
+            if (waterJumpTrace.hitCollider != null && 
+                Vector3.Angle(Vector3.up, waterJumpTrace.planeNormal) >= _config.slopeLimit) {
+                _mover.moveData.velocity.y = Mathf.Max(
+                    _mover.moveData.velocity.y, 
+                    _config.jumpForce
+                );
+            }
+        }
+        
+        /// <summary>
+        /// Check for ladders in the movement path
+        /// </summary>
+        /// <param name="colliderScale">Scale factor for collision checks</param>
+        /// <param name="direction">Direction to check</param>
+        private void LadderCheck(Vector3 colliderScale, Vector3 direction) {
+            // Early exit if not moving
+            if (direction.sqrMagnitude <= 0.0001f)
+                return;
+            
+            // Scale horizontal direction only
+            Vector3 horizontalDirection = Vector3.Scale(direction, horizontalPlane);
+            bool foundLadder = false;
+
+            // Cast a box to find potential ladders
+            RaycastHit[] hits = Physics.BoxCastAll(
+                _mover.moveData.origin,
+                Vector3.Scale(_mover.collider.bounds.size * 0.5f, colliderScale),
+                horizontalDirection.normalized,
+                Quaternion.identity,
+                horizontalDirection.magnitude,
+                MovePhysics.groundLayerMask,
+                QueryTriggerInteraction.Collide
+            );
+
+            // Check each hit for a ladder
+            foreach (RaycastHit hit in hits) {
+                Ladder ladder = hit.transform.GetComponentInParent<Ladder>();
+                if (ladder != null) {
+                    // Check if ladder is valid for climbing
+                    if (IsValidLadder(hit)) {
+                        foundLadder = true;
+                        
+                        // Handle new ladder detection
+                        if (!_mover.moveData.climbingLadder) {
+                            InitializeLadderClimb(hit, direction);
+                        }
+                    }
+                }
+            }
+
+            // Reset ladder state if no valid ladder found
+            if (!foundLadder) {
+                ResetLadderState();
+            }
+        }
+
+        /// <summary>
+        /// Check if ladder is valid for climbing based on angle
+        /// </summary>
+        /// <param name="hit">Raycast hit information</param>
+        /// <returns>True if ladder can be climbed</returns>
+        private bool IsValidLadder(RaycastHit hit) {
+            bool allowClimb = true;
+            float ladderAngle = Vector3.Angle(Vector3.up, hit.normal);
+            
+            if (_mover.moveData.angledLaddersEnabled) {
+                // For angled ladders, normal must point upward
+                if (hit.normal.y < 0f) {
+                    allowClimb = false;
+                } else if (ladderAngle <= _mover.moveData.slopeLimit) {
+                    // If angle is less than slope limit, treat as walkable surface
+                    allowClimb = false;
+                }
+            } else if (hit.normal.y != 0f) {
+                // For non-angled ladders, normal must be perfectly vertical
+                allowClimb = false;
+            }
+            
+            return allowClimb;
+        }
+
+        /// <summary>
+        /// Initialize ladder climbing state
+        /// </summary>
+        /// <param name="hit">Raycast hit information</param>
+        /// <param name="direction">Movement direction</param>
+        private void InitializeLadderClimb(RaycastHit hit, Vector3 direction) {
+            _mover.moveData.climbingLadder = true;
+            _mover.moveData.ladderNormal = hit.normal;
+            _mover.moveData.ladderDirection = -hit.normal * direction.magnitude * 2f;
+
+            if (_mover.moveData.angledLaddersEnabled) {
+                // Calculate climb direction for angled ladders
+                Vector3 sideDir = hit.normal;
+                sideDir.y = 0f;
+                sideDir = Quaternion.AngleAxis(-90f, Vector3.up) * sideDir;
+
+                _mover.moveData.ladderClimbDir = Quaternion.AngleAxis(90f, sideDir) * hit.normal;
+                
+                // Make sure Y is always 1 for consistent climb speed
+                if (Mathf.Abs(_mover.moveData.ladderClimbDir.y) > 0.0001f) {
+                    _mover.moveData.ladderClimbDir /= _mover.moveData.ladderClimbDir.y;
+                }
+            } else {
+                // Vertical ladders use standard up direction
+                _mover.moveData.ladderClimbDir = Vector3.up;
+            }
+        }
+
+        /// <summary>
+        /// Reset ladder state when no ladder found
+        /// </summary>
+        private void ResetLadderState() {
+            _mover.moveData.ladderNormal = Vector3.zero;
+            _mover.moveData.ladderVelocity = Vector3.zero;
+            _mover.moveData.climbingLadder = false;
+            _mover.moveData.ladderClimbDir = Vector3.up;
+        }
+
+        /// <summary>
+        /// Handle physics while on a ladder
+        /// </summary>
+        private void LadderPhysics() {
+            // Calculate climbing velocity based on input
             _mover.moveData.ladderVelocity = _mover.moveData.ladderClimbDir * _mover.moveData.verticalAxis * 6f;
 
-            _mover.moveData.velocity = Vector3.Lerp (_mover.moveData.velocity, _mover.moveData.ladderVelocity, _deltaTime * 10f);
+            // Smoothly transition to ladder velocity
+            _mover.moveData.velocity = Vector3.Lerp(
+                _mover.moveData.velocity, 
+                _mover.moveData.ladderVelocity, 
+                _deltaTime * 10f
+            );
 
-            LadderCheck (Vector3.one, _mover.moveData.ladderDirection);
+            // Continue checking for ladder collision
+            LadderCheck(Vector3.one, _mover.moveData.ladderDirection);
             
-            Trace floorTrace = TraceToFloor ();
-            if (_mover.moveData.verticalAxis < 0f && floorTrace.hitCollider != null && Vector3.Angle (Vector3.up, floorTrace.planeNormal) <= _mover.moveData.slopeLimit) {
-
+            // Check for ground when moving down
+            Trace floorTrace = TraceToFloor();
+            if (_mover.moveData.verticalAxis < 0f && 
+                floorTrace.hitCollider != null && 
+                Vector3.Angle(Vector3.up, floorTrace.planeNormal) <= _mover.moveData.slopeLimit) {
+                // Exit ladder when moving down and reaching walkable ground
                 _mover.moveData.velocity = _mover.moveData.ladderNormal * 0.5f;
                 _mover.moveData.ladderVelocity = Vector3.zero;
                 _mover.moveData.climbingLadder = false;
-
             }
 
+            // Handle jumping off ladder
             if (_mover.moveData.wishJump) {
-
                 _mover.moveData.velocity = _mover.moveData.ladderNormal * 4f;
                 _mover.moveData.ladderVelocity = Vector3.zero;
                 _mover.moveData.climbingLadder = false;
-                
             }
-            
         }
         
-        private void Accelerate (Vector3 wishDir, float wishSpeed, float acceleration, bool yMovement) {
-
-            // Initialise variables
-            float _addSpeed;
-            float _accelerationSpeed;
-            float _currentSpeed;
-            
-            // again, no idea
-            _currentSpeed = Vector3.Dot (_mover.moveData.velocity, wishDir);
-            _addSpeed = wishSpeed - _currentSpeed;
-
-            // If you're not actually increasing your speed, stop here.
-            if (_addSpeed <= 0)
+        /// <summary>
+        /// Accelerate movement in the desired direction
+        /// </summary>
+        /// <param name="wishDir">Desired movement direction</param>
+        /// <param name="wishSpeed">Desired movement speed</param>
+        /// <param name="acceleration">Acceleration value</param>
+        /// <param name="yMovement">Whether to apply movement to the Y axis</param>
+        private void Accelerate(Vector3 wishDir, float wishSpeed, float acceleration, bool yMovement) {
+            // Skip if no wishdir
+            if (wishDir.sqrMagnitude < 0.0001f) {
                 return;
-
-            // won't bother trying to understand any of this, really
-            _accelerationSpeed = Mathf.Min (acceleration * _deltaTime * wishSpeed, _addSpeed);
-
-            // Add the velocity.
-            _mover.moveData.velocity.x += _accelerationSpeed * wishDir.x;
-            if (yMovement) { _mover.moveData.velocity.y += _accelerationSpeed * wishDir.y; }
-            _mover.moveData.velocity.z += _accelerationSpeed * wishDir.z;
-
-        }
-
-        private void ApplyFriction (float t, bool yAffected, bool grounded) {
-
-            // Initialise variables
-            Vector3 _vel = _mover.moveData.velocity;
-            float _speed;
-            float _newSpeed;
-            float _control;
-            float _drop;
-
-            // Set Y to 0, speed to the magnitude of movement and drop to 0. I think drop is the amount of speed that is lost, but I just stole this from the internet, idk.
-            _vel.y = 0.0f;
-            _speed = _vel.magnitude;
-            _drop = 0.0f;
-
-            float fric = crouching ? _config.crouchFriction : _config.friction;
-            float accel = crouching ? _config.crouchAcceleration : _config.acceleration;
-            float decel = crouching ? _config.crouchDeceleration : _config.deceleration;
-
-            // Only apply friction if the player is grounded
-            if (grounded) {
-                
-                // i honestly have no idea what this does tbh
-                _vel.y = _mover.moveData.velocity.y;
-                _control = _speed < decel ? decel : _speed;
-                _drop = _control * fric * _deltaTime * t;
-
             }
 
-            // again, no idea, but comments look cool
-            _newSpeed = Mathf.Max (_speed - _drop, 0f);
-            if (_speed > 0.0f)
-                _newSpeed /= _speed;
+            // Calculate dot product to determine current speed in the desired direction
+            float currentSpeed = Vector3.Dot(_mover.moveData.velocity, wishDir);
+            
+            // Calculate remaining speed to reach target
+            float addSpeed = wishSpeed - currentSpeed;
 
-            // Set the end-velocity
-            _mover.moveData.velocity.x *= _newSpeed;
-            if (yAffected == true) { _mover.moveData.velocity.y *= _newSpeed; }
-            _mover.moveData.velocity.z *= _newSpeed;
+            // If no speed to add, return
+            if (addSpeed <= 0) {
+                return;
+            }
 
+            // Calculate acceleration amount
+            float accelSpeed = Mathf.Min(acceleration * _deltaTime * wishSpeed, addSpeed);
+            
+            // Apply acceleration to velocity
+            _mover.moveData.velocity.x += accelSpeed * wishDir.x;
+            if (yMovement) { 
+                _mover.moveData.velocity.y += accelSpeed * wishDir.y; 
+            }
+            _mover.moveData.velocity.z += accelSpeed * wishDir.z;
         }
 
         /// <summary>
-        /// 
+        /// Apply friction to velocity
         /// </summary>
-        /// <returns></returns>
-        private Vector3 AirInputMovement () {
+        /// <param name="t">Friction multiplier</param>
+        /// <param name="yAffected">Whether Y component should be affected</param>
+        /// <param name="grounded">Whether the entity is on the ground</param>
+        private void ApplyFriction(float t, bool yAffected, bool grounded) {
+            // Extract horizontal velocity
+            Vector3 vel = _mover.moveData.velocity;
+            vel.y = 0.0f;
+            
+            float speed = vel.magnitude;
+            if (speed < 0.0001f) {
+                return; // No need to apply friction if not moving
+            }
+            
+            float drop = 0.0f;
 
+            // Get friction and deceleration values based on crouch state
+            float friction = crouching ? _config.crouchFriction : _config.friction;
+            float decel = crouching ? _config.crouchDeceleration : _config.deceleration;
+
+            // Apply friction calculation only when grounded
+            if (grounded) {
+                // Calculate control based on speed vs deceleration
+                float control = speed < decel ? decel : speed;
+                drop = control * friction * _deltaTime * t;
+            }
+
+            // Calculate new speed after friction
+            float newSpeed = Mathf.Max(speed - drop, 0f);
+            
+            // Apply the friction factor to velocity
+            if (speed > 0.0001f) {
+                float frictionFactor = newSpeed / speed;
+                // Apply to each component
+                _mover.moveData.velocity.x *= frictionFactor;
+                if (yAffected) { 
+                    _mover.moveData.velocity.y *= frictionFactor; 
+                }
+                _mover.moveData.velocity.z *= frictionFactor;
+            }
+        }
+
+        /// <summary>
+        /// Apply movement input while in the air
+        /// </summary>
+        /// <returns>Additional velocity from air movement</returns>
+        private Vector3 AirInputMovement() {
             Vector3 wishVel, wishDir;
             float wishSpeed;
 
-            GetWishValues (out wishVel, out wishDir, out wishSpeed);
-
-            if (_config.clampAirSpeed && (wishSpeed != 0f && (wishSpeed > _config.maxSpeed))) {
-
-                wishVel = wishVel * (_config.maxSpeed / wishSpeed);
+            // Get movement intent
+            GetWishValues(out wishVel, out wishDir, out wishSpeed);
+            
+            // Air speed clamping
+            if (_config.clampAirSpeed && wishSpeed > 0.0001f && wishSpeed > _config.maxSpeed) {
+                wishVel *= (_config.maxSpeed / wishSpeed);
                 wishSpeed = _config.maxSpeed;
-
             }
 
-            return MovePhysics.AirAccelerate (_mover.moveData.velocity, wishDir, wishSpeed, _config.airAcceleration, _config.airCap, _deltaTime);
-
+            // Apply air acceleration
+            return MovePhysics.AirAccelerate(
+                _mover.moveData.velocity, 
+                wishDir, 
+                wishSpeed, 
+                _config.airAcceleration, 
+                _config.airCap, 
+                _deltaTime
+            );
         }
 
         /// <summary>
-        /// 
+        /// Calculate desired movement values from input
         /// </summary>
-        /// <param name="wishVel"></param>
-        /// <param name="wishDir"></param>
-        /// <param name="wishSpeed"></param>
-        private void GetWishValues (out Vector3 wishVel, out Vector3 wishDir, out float wishSpeed) {
-
+        /// <param name="wishVel">Output desired velocity</param>
+        /// <param name="wishDir">Output desired direction</param>
+        /// <param name="wishSpeed">Output desired speed</param>
+        private void GetWishValues(out Vector3 wishVel, out Vector3 wishDir, out float wishSpeed) {
+            // Initialize outputs
             wishVel = Vector3.zero;
             wishDir = Vector3.zero;
             wishSpeed = 0f;
 
-            Vector3 forward = _mover.forward,
-                right = _mover.right;
+            // Get movement vectors
+            Vector3 forward = _mover.forward;
+            Vector3 right = _mover.right;
 
-            forward [1] = 0;
-            right [1] = 0;
-            forward.Normalize ();
-            right.Normalize ();
-
-            for (int i = 0; i < 3; i++)
-                wishVel [i] = forward [i] * _mover.moveData.forwardMove + right [i] * _mover.moveData.sideMove;
-            wishVel [1] = 0;
-
-            wishSpeed = wishVel.magnitude;
-            wishDir = wishVel.normalized;
-
-        }
-
-        /// <summary>
-        /// 
-        /// </summary>
-        /// <param name="velocity"></param>
-        /// <param name="jumpPower"></param>
-        private void Jump () {
+            // Flatten vectors for horizontal movement
+            forward.y = 0;
+            right.y = 0;
             
-            if (!_config.autoBhop)
-                _mover.moveData.wishJump = false;
-            
-            _mover.moveData.velocity.y += _config.jumpForce;
-            jumping = true;
-
-        }
-
-        /// <summary>
-        /// 
-        /// </summary>
-        private bool CheckGrounded () {
-
-            _mover.moveData.surfaceFriction = 1f;
-            var movingUp = _mover.moveData.velocity.y > 0f;
-            var trace = TraceToFloor ();
-
-            float groundSteepness = Vector3.Angle (Vector3.up, trace.planeNormal);
-
-            if (trace.hitCollider == null || groundSteepness > _config.slopeLimit || (jumping && _mover.moveData.velocity.y > 0f)) {
-
-                SetGround (null);
-
-                if (movingUp && _mover.moveType != MoveType.Noclip)
-                    _mover.moveData.surfaceFriction = _config.airFriction;
-                
-                return false;
-
-            } else {
-
-                groundNormal = trace.planeNormal;
-                SetGround (trace.hitCollider.gameObject);
-                return true;
-
+            // Normalize if they have magnitude
+            if (forward.sqrMagnitude > 0.0001f) {
+                forward.Normalize();
+            }
+            if (right.sqrMagnitude > 0.0001f) {
+                right.Normalize();
             }
 
+            // Calculate velocity based on input
+            wishVel = forward * _mover.moveData.forwardMove + right * _mover.moveData.sideMove;
+            wishVel.y = 0;
+
+            // Calculate speed and direction
+            wishSpeed = wishVel.magnitude;
+            if (wishSpeed > 0.0001f) {
+                wishDir = wishVel / wishSpeed;
+            } else {
+                wishDir = Vector3.zero;
+            }
         }
 
         /// <summary>
-        /// 
+        /// Apply jump force to the entity's velocity
         /// </summary>
-        /// <param name="obj"></param>
-        private void SetGround (GameObject obj) {
+        private void Jump() {
+            // Reset wish jump flag if auto bunnyhopping is disabled
+            if (!_config.autoBhop) {
+                _mover.moveData.wishJump = false;
+            }
+            
+            // Apply jump force to Y velocity
+            _mover.moveData.velocity.y += _config.jumpForce;
+            jumping = true;
+        }
 
+        /// <summary>
+        /// Check if the entity is on the ground
+        /// </summary>
+        /// <returns>True if the entity is grounded</returns>
+        private bool CheckGrounded() {
+            // Set default surface friction
+            _mover.moveData.surfaceFriction = 1f;
+            
+            // Cache upward movement check
+            bool movingUp = _mover.moveData.velocity.y > 0f;
+            
+            // Cast ray to check for ground below
+            Trace trace = TraceToFloor();
+            float groundSteepness = Vector3.Angle(vectorUp, trace.planeNormal);
+
+            // Check if not grounded
+            if (trace.hitCollider == null || 
+                groundSteepness > _config.slopeLimit || 
+                (jumping && movingUp)) {
+                
+                // Set to not grounded
+                SetGround(null);
+
+                // Apply air friction when moving upward in air
+                if (movingUp && _mover.moveType != MoveType.Noclip) {
+                    _mover.moveData.surfaceFriction = _config.airFriction;
+                }
+                
+                return false;
+            } else {
+                // Set ground normal and apply ground
+                groundNormal = trace.planeNormal;
+                SetGround(trace.hitCollider.gameObject);
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// Set the ground object for the entity
+        /// </summary>
+        /// <param name="obj">GameObject to set as ground, or null</param>
+        private void SetGround(GameObject obj) {
             if (obj != null) {
-
+                // Set ground object and zero vertical velocity
                 _mover.groundObject = obj;
                 _mover.moveData.velocity.y = 0;
-
-            } else
+                _mover.moveData.grounded = true;
+            } else {
+                // Clear ground object
                 _mover.groundObject = null;
-
+                _mover.moveData.grounded = false;
+            }
         }
 
         /// <summary>
-        /// 
+        /// Trace a short ray downward to check for ground
         /// </summary>
-        /// <param name="start"></param>
-        /// <param name="end"></param>
-        /// <param name="layerMask"></param>
-        /// <returns></returns>
-        private Trace TraceBounds (Vector3 start, Vector3 end, int layerMask) {
-
-            return Tracer.TraceCollider (_mover.collider, start, end, layerMask);
-
-        }
-
-        /// <summary>
-        /// 
-        /// </summary>
-        /// <returns></returns>
-        private Trace TraceToFloor () {
-
-            var down = _mover.moveData.origin;
+        /// <returns>Trace result for ground check</returns>
+        private Trace TraceToFloor() {
+            // Create position slightly below current origin
+            Vector3 down = _mover.moveData.origin;
             down.y -= 0.15f;
 
-            return Tracer.TraceCollider (_mover.collider, _mover.moveData.origin, down, MovePhysics.groundLayerMask);
-
+            // Cast ray down to detect ground
+            return Tracer.TraceCollider(_mover.collider, _mover.moveData.origin, down, MovePhysics.groundLayerMask);
         }
 
-        public void Crouch (IMoveControllable mover, MovementConfig config, float deltaTime) {
+        /// <summary>
+        /// Trace between two points with the entity's collider
+        /// </summary>
+        /// <param name="start">Starting position</param>
+        /// <param name="end">End position</param>
+        /// <param name="layerMask">Layer mask for collision check</param>
+        /// <returns>Trace result</returns>
+        private Trace TraceBounds(Vector3 start, Vector3 end, int layerMask) {
+            return Tracer.TraceCollider(_mover.collider, start, end, layerMask);
+        }
 
+        /// <summary>
+        /// Handle player crouching and uncrouching
+        /// </summary>
+        /// <param name="mover">The movable entity</param>
+        /// <param name="config">Movement configuration</param>
+        /// <param name="deltaTime">Time since last frame</param>
+        public void Crouch(IMoveControllable mover, MovementConfig config, float deltaTime) {
+            // Cache parameters
             _mover = mover;
             _config = config;
             _deltaTime = deltaTime;
 
-            if (_mover == null)
+            // Early exit checks
+            if (_mover == null || _mover.collider == null) {
                 return;
+            }
 
-            if (_mover.collider == null)
-                return;
-
+            // Get current state
             bool grounded = _mover.groundObject != null;
             bool wantsToCrouch = _mover.moveData.crouching;
+            float crouchingHeight = Mathf.Clamp(_mover.moveData.crouchingHeight, 0.01f, 1f);
+            float heightDifference = _mover.moveData.defaultHeight * (1f - crouchingHeight);
 
-            float crouchingHeight = Mathf.Clamp (_mover.moveData.crouchingHeight, 0.01f, 1f);
-            float heightDifference = _mover.moveData.defaultHeight - _mover.moveData.defaultHeight * crouchingHeight;
-
-            if (grounded)
+            // Reset uncrouch direction when grounded
+            if (grounded) {
                 uncrouchDown = false;
-
-            // Crouching input
-            if (grounded)
-                crouchLerp = Mathf.Lerp (crouchLerp, wantsToCrouch ? 1f : 0f, _deltaTime * _mover.moveData.crouchingSpeed);
-            else if (!grounded && !wantsToCrouch && crouchLerp < 0.95f)
-                crouchLerp = 0f;
-            else if (!grounded && wantsToCrouch)
-                crouchLerp = 1f;
-
-            // Collider and position changing
-            if (crouchLerp > 0.9f && !crouching) {
-                
-                // Begin crouching
-                crouching = true;
-                if (_mover.collider.GetType () == typeof (BoxCollider)) {
-
-                    // Box collider
-                    BoxCollider boxCollider = (BoxCollider)_mover.collider;
-                    boxCollider.size = new Vector3 (boxCollider.size.x, _mover.moveData.defaultHeight * crouchingHeight, boxCollider.size.z);
-
-                } else if (_mover.collider.GetType () == typeof (CapsuleCollider)) {
-
-                    // Capsule collider
-                    CapsuleCollider capsuleCollider = (CapsuleCollider)_mover.collider;
-                    capsuleCollider.height = _mover.moveData.defaultHeight * crouchingHeight;
-
-                }
-
-                // Move position and stuff
-                _mover.moveData.origin += heightDifference / 2 * (grounded ? Vector3.down : Vector3.up);
-                foreach (Transform child in playerTransform) {
-
-                    if (child == _mover.moveData.viewTransform)
-                        continue;
-
-                    child.localPosition = new Vector3 (child.localPosition.x, child.localPosition.y * crouchingHeight, child.localPosition.z);
-
-                }
-
-                uncrouchDown = !grounded;
-
-            } else if (crouching) {
-
-                // Check if the player can uncrouch
-                bool canUncrouch = true;
-                if (_mover.collider.GetType () == typeof (BoxCollider)) {
-
-                    // Box collider
-                    BoxCollider boxCollider = (BoxCollider)_mover.collider;
-                    Vector3 halfExtents = boxCollider.size * 0.5f;
-                    Vector3 startPos = boxCollider.transform.position;
-                    Vector3 endPos = boxCollider.transform.position + (uncrouchDown ? Vector3.down : Vector3.up) * heightDifference;
-
-                    Trace trace = Tracer.TraceBox (startPos, endPos, halfExtents, boxCollider.contactOffset, MovePhysics.groundLayerMask);
-
-                    if (trace.hitCollider != null)
-                        canUncrouch = false;
-
-                } else if (_mover.collider.GetType () == typeof (CapsuleCollider)) {
-
-                    // Capsule collider
-                    CapsuleCollider capsuleCollider = (CapsuleCollider)_mover.collider;
-                    Vector3 point1 = capsuleCollider.center + Vector3.up * capsuleCollider.height * 0.5f;
-                    Vector3 point2 = capsuleCollider.center + Vector3.down * capsuleCollider.height * 0.5f;
-                    Vector3 startPos = capsuleCollider.transform.position;
-                    Vector3 endPos = capsuleCollider.transform.position + (uncrouchDown ? Vector3.down : Vector3.up) * heightDifference;
-
-                    Trace trace = Tracer.TraceCapsule (point1, point2, capsuleCollider.radius, startPos, endPos, capsuleCollider.contactOffset, MovePhysics.groundLayerMask);
-
-                    if (trace.hitCollider != null)
-                        canUncrouch = false;
-
-                }
-
-                // Uncrouch
-                if (canUncrouch && crouchLerp <= 0.9f) {
-
-                    crouching = false;
-                    if (_mover.collider.GetType () == typeof (BoxCollider)) {
-
-                        // Box collider
-                        BoxCollider boxCollider = (BoxCollider)_mover.collider;
-                        boxCollider.size = new Vector3 (boxCollider.size.x, _mover.moveData.defaultHeight, boxCollider.size.z);
-
-                    } else if (_mover.collider.GetType () == typeof (CapsuleCollider)) {
-
-                        // Capsule collider
-                        CapsuleCollider capsuleCollider = (CapsuleCollider)_mover.collider;
-                        capsuleCollider.height = _mover.moveData.defaultHeight;
-
-                    }
-
-                    // Move position and stuff
-                    _mover.moveData.origin += heightDifference / 2 * (uncrouchDown ? Vector3.down : Vector3.up);
-                    foreach (Transform child in playerTransform) {
-
-                        child.localPosition = new Vector3 (child.localPosition.x, child.localPosition.y / crouchingHeight, child.localPosition.z);
-
-                    }
-
-                }
-
-                if (!canUncrouch)
-                    crouchLerp = 1f;
-
             }
 
-            // Changing camera position
-            if (!crouching)
-                _mover.moveData.viewTransform.localPosition = Vector3.Lerp (_mover.moveData.viewTransformDefaultLocalPos, _mover.moveData.viewTransformDefaultLocalPos * crouchingHeight + Vector3.down * heightDifference * 0.5f, crouchLerp);
-            else
-                _mover.moveData.viewTransform.localPosition = Vector3.Lerp (_mover.moveData.viewTransformDefaultLocalPos - Vector3.down * heightDifference * 0.5f, _mover.moveData.viewTransformDefaultLocalPos * crouchingHeight, crouchLerp);
+            // Update crouch lerp value
+            UpdateCrouchLerp(grounded, wantsToCrouch);
 
+            // Handle crouch state changes
+            if (crouchLerp > 0.9f && !crouching) {
+                // Start crouching
+                BeginCrouch(crouchingHeight, heightDifference, grounded);
+            } 
+            else if (crouching) {
+                // Check if uncrouching is possible
+                bool canUncrouch = CanUncrouch(heightDifference);
+                
+                // Attempt to uncrouch
+                if (canUncrouch && crouchLerp <= 0.9f) {
+                    EndCrouch(crouchingHeight, heightDifference);
+                }
+                
+                // Force crouch if unable to uncrouch
+                if (!canUncrouch) {
+                    crouchLerp = 1f;
+                }
+            }
+
+            // Update camera position
+            UpdateCameraPosition(crouchingHeight, heightDifference);
         }
 
-        void SlideMovement () {
+        /// <summary>
+        /// Update the crouch lerp value based on input and state
+        /// </summary>
+        private void UpdateCrouchLerp(bool grounded, bool wantsToCrouch) {
+            if (grounded) {
+                // Smooth crouch transition when grounded
+                crouchLerp = Mathf.Lerp(
+                    crouchLerp, 
+                    wantsToCrouch ? 1f : 0f, 
+                    _deltaTime * _mover.moveData.crouchingSpeed
+                );
+            } 
+            else if (!wantsToCrouch && crouchLerp < 0.95f) {
+                // Instant uncrouch in air if not forcing crouch
+                crouchLerp = 0f;
+            } 
+            else if (wantsToCrouch) {
+                // Instant crouch in air if requesting crouch
+                crouchLerp = 1f;
+            }
+        }
+
+        /// <summary>
+        /// Begin crouching state
+        /// </summary>
+        private void BeginCrouch(float crouchingHeight, float heightDifference, bool grounded) {
+            crouching = true;
             
-            // Gradually change direction
-            slideDirection += new Vector3 (groundNormal.x, 0f, groundNormal.z) * slideSpeedCurrent * _deltaTime;
-            slideDirection = slideDirection.normalized;
-
-            // Set direction
-            Vector3 slideForward = Vector3.Cross (groundNormal, Quaternion.AngleAxis (-90, Vector3.up) * slideDirection);
-            
-            // Set the velocity
-            slideSpeedCurrent -= _config.slideFriction * _deltaTime;
-            slideSpeedCurrent = Mathf.Clamp (slideSpeedCurrent, 0f, _config.maximumSlideSpeed);
-            slideSpeedCurrent -= (slideForward * slideSpeedCurrent).y * _deltaTime * _config.downhillSlideSpeedMultiplier; // Accelerate downhill (-y = downward, - * - = +)
-
-            _mover.moveData.velocity = slideForward * slideSpeedCurrent;
-            
-            // Jump
-            if (_mover.moveData.wishJump && slideSpeedCurrent < _config.minimumSlideSpeed * _config.slideSpeedMultiplier) {
-
-                Jump ();
-                return;
-
+            // Adjust collider based on type
+            if (_mover.collider is BoxCollider) {
+                BoxCollider boxCollider = (BoxCollider)_mover.collider;
+                boxCollider.size = new Vector3(
+                    boxCollider.size.x, 
+                    _mover.moveData.defaultHeight * crouchingHeight, 
+                    boxCollider.size.z
+                );
+            } 
+            else if (_mover.collider is CapsuleCollider) {
+                CapsuleCollider capsuleCollider = (CapsuleCollider)_mover.collider;
+                capsuleCollider.height = _mover.moveData.defaultHeight * crouchingHeight;
             }
 
+            // Adjust position - move down when grounded, up when in air
+            _mover.moveData.origin += heightDifference * 0.5f * (grounded ? vectorDown : vectorUp);
+            
+            // Adjust child objects' positions except view
+            foreach (Transform child in playerTransform) {
+                if (child == _mover.moveData.viewTransform) {
+                    continue;
+                }
+                child.localPosition = new Vector3(
+                    child.localPosition.x, 
+                    child.localPosition.y * crouchingHeight, 
+                    child.localPosition.z
+                );
+            }
+
+            // Set uncrouch direction
+            uncrouchDown = !grounded;
+        }
+
+        /// <summary>
+        /// Check if player can uncrouch without hitting anything
+        /// </summary>
+        private bool CanUncrouch(float heightDifference) {
+            if (_mover.collider is BoxCollider) {
+                // Box collider check
+                BoxCollider boxCollider = (BoxCollider)_mover.collider;
+                Vector3 halfExtents = boxCollider.size * 0.5f;
+                Vector3 startPos = boxCollider.transform.position;
+                Vector3 endPos = startPos + (uncrouchDown ? vectorDown : vectorUp) * heightDifference;
+
+                Trace trace = Tracer.TraceBox(
+                    startPos, 
+                    endPos, 
+                    halfExtents, 
+                    boxCollider.contactOffset, 
+                    MovePhysics.groundLayerMask
+                );
+
+                return trace.hitCollider == null;
+            } 
+            else if (_mover.collider is CapsuleCollider) {
+                // Capsule collider check
+                CapsuleCollider capsuleCollider = (CapsuleCollider)_mover.collider;
+                Vector3 point1 = capsuleCollider.center + vectorUp * capsuleCollider.height * 0.5f;
+                Vector3 point2 = capsuleCollider.center + vectorDown * capsuleCollider.height * 0.5f;
+                Vector3 startPos = capsuleCollider.transform.position;
+                Vector3 endPos = startPos + (uncrouchDown ? vectorDown : vectorUp) * heightDifference;
+
+                Trace trace = Tracer.TraceCapsule(
+                    point1, 
+                    point2, 
+                    capsuleCollider.radius, 
+                    startPos, 
+                    endPos, 
+                    capsuleCollider.contactOffset, 
+                    MovePhysics.groundLayerMask
+                );
+
+                return trace.hitCollider == null;
+            }
+            
+            // Default to false for unsupported collider types
+            return false;
+        }
+
+        /// <summary>
+        /// End crouching state
+        /// </summary>
+        private void EndCrouch(float crouchingHeight, float heightDifference) {
+            crouching = false;
+            
+            // Adjust collider based on type
+            if (_mover.collider is BoxCollider) {
+                BoxCollider boxCollider = (BoxCollider)_mover.collider;
+                boxCollider.size = new Vector3(
+                    boxCollider.size.x, 
+                    _mover.moveData.defaultHeight, 
+                    boxCollider.size.z
+                );
+            } 
+            else if (_mover.collider is CapsuleCollider) {
+                CapsuleCollider capsuleCollider = (CapsuleCollider)_mover.collider;
+                capsuleCollider.height = _mover.moveData.defaultHeight;
+            }
+
+            // Adjust position
+            _mover.moveData.origin += heightDifference * 0.5f * (uncrouchDown ? vectorDown : vectorUp);
+            
+            // Restore child objects' positions
+            foreach (Transform child in playerTransform) {
+                if (crouchingHeight > 0.0001f) { // Avoid division by zero
+                    child.localPosition = new Vector3(
+                        child.localPosition.x, 
+                        child.localPosition.y / crouchingHeight, 
+                        child.localPosition.z
+                    );
+                }
+            }
+        }
+
+        /// <summary>
+        /// Update camera position during crouch/uncrouch
+        /// </summary>
+        private void UpdateCameraPosition(float crouchingHeight, float heightDifference) {
+            if (!crouching) {
+                // Lerping from standing to crouching view position
+                _mover.moveData.viewTransform.localPosition = Vector3.Lerp(
+                    _mover.moveData.viewTransformDefaultLocalPos, 
+                    _mover.moveData.viewTransformDefaultLocalPos * crouchingHeight + vectorDown * heightDifference * 0.5f, 
+                    crouchLerp
+                );
+            } else {
+                // Lerping from crouching to standing view position
+                _mover.moveData.viewTransform.localPosition = Vector3.Lerp(
+                    _mover.moveData.viewTransformDefaultLocalPos - vectorDown * heightDifference * 0.5f, 
+                    _mover.moveData.viewTransformDefaultLocalPos * crouchingHeight, 
+                    crouchLerp
+                );
+            }
+        }
+
+        /// <summary>
+        /// Handle movement while sliding
+        /// </summary>
+        private void SlideMovement() {
+            // Get horizontal components of ground normal
+            Vector3 horizontalNormal = new Vector3(groundNormal.x, 0f, groundNormal.z);
+            
+            // Gradually change slide direction based on ground slope
+            if (horizontalNormal.sqrMagnitude > 0.0001f) {
+                slideDirection += horizontalNormal * slideSpeedCurrent * _deltaTime;
+                slideDirection = slideDirection.normalized;
+            }
+
+            // Calculate sliding forward direction using cross product
+            Vector3 slideForward = Vector3.Cross(
+                groundNormal, 
+                Quaternion.AngleAxis(-90, vectorUp) * slideDirection
+            );
+            
+            // Apply slide friction
+            slideSpeedCurrent -= _config.slideFriction * _deltaTime;
+            
+            // Clamp slide speed
+            slideSpeedCurrent = Mathf.Clamp(slideSpeedCurrent, 0f, _config.maximumSlideSpeed);
+            
+            // Accelerate when sliding downhill
+            if (slideForward.y < 0) {
+                float downhillAcceleration = -slideForward.y * slideSpeedCurrent * 
+                                            _deltaTime * _config.downhillSlideSpeedMultiplier;
+                slideSpeedCurrent += downhillAcceleration;
+            }
+
+            // Set velocity based on slide direction and speed
+            _mover.moveData.velocity = slideForward * slideSpeedCurrent;
+            
+            // Allow jumping out of slide
+            if (_mover.moveData.wishJump && 
+                slideSpeedCurrent < _config.minimumSlideSpeed * _config.slideSpeedMultiplier) {
+                Jump();
+            }
         }
 
     }
