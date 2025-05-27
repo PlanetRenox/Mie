@@ -271,7 +271,17 @@
         <section class="newsletter-section">
             <h2>Subscribe to Our Newsletter</h2>
             <p style="margin-bottom: 20px; color: #c7d5e0;">Get exclusive updates, early access, and special offers!</p>
-            <form class="newsletter-form" onsubmit="event.preventDefault(); alert('Thank you for subscribing!');">
+            <form class="newsletter-form" onsubmit="event.preventDefault(); 
+                fetch('https://mie.awww.workers.dev/subscribe', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ email: this.querySelector('input[type=\'email\']').value })
+                })
+                .then(response => response.text())
+                .then(data => alert(data))
+                .catch(error => console.error('Error:', error));">
                 <input type="email" placeholder="Enter your email address" required>
                 <button type="submit">Subscribe</button>
             </form>
