@@ -281,7 +281,10 @@
                 })
                 .then(response => response.text())
                 .then(data => alert(data))
-                .catch(error => console.error('Error:', error));">
+                .catch(error => {
+        alert(error.message || JSON.stringify(error));
+        console.error('Error:', error);
+    });">
                 <input type="email" placeholder="Enter your email address" required>
                 <button type="submit">Subscribe</button>
             </form>
