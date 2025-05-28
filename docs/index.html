@@ -18,6 +18,41 @@
             line-height: 1.6;
         }
 
+        /* Loading Overlay */
+        .loading-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(10, 14, 26, 0.8);
+            z-index: 9999;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .loading-spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid #2a3f5f;
+            border-top: 4px solid #66c0f4;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .loading-text {
+            color: #66c0f4;
+            margin-top: 20px;
+            font-size: 18px;
+            font-weight: 500;
+        }
+
         /* Open Source Bar */
         .open-source-bar {
             background-color: #1a1f2e;
@@ -244,6 +279,14 @@
     </style>
 </head>
 <body>
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div style="display: flex; flex-direction: column; align-items: center;">
+            <div class="loading-spinner"></div>
+            <div class="loading-text">Subscribing...</div>
+        </div>
+    </div>
+
     <!-- Open Source Bar -->
     <div class="open-source-bar">
         <p>🎮 This game is open source! Contribute to development at
@@ -271,20 +314,7 @@
         <section class="newsletter-section">
             <h2>Subscribe to Our Newsletter</h2>
             <p style="margin-bottom: 20px; color: #c7d5e0;">Get exclusive updates, early access, and special offers!</p>
-            <form class="newsletter-form" onsubmit="event.preventDefault(); 
-                fetch('https://mie.awww.workers.dev/subscribe', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ email: this.querySelector('input[type=\'email\']').value })
-                })
-                .then(response => response.text())
-                .then(data => alert(data))
-                .catch(error => {
-        alert(error.message || JSON.stringify(error));
-        console.error('Error:', error);
-    });">
+            <form class="newsletter-form" id="newsletterForm">
                 <input type="email" placeholder="Enter your email address" required>
                 <button type="submit">Subscribe</button>
             </form>
@@ -314,5 +344,49 @@
             </div>
         </section>
     </div>
+
+    <script>
+        document.getElementById('newsletterForm').addEventListener('submit', async function(event) {
+            event.preventDefault();
+            
+            const loadingOverlay = document.getElementById('loadingOverlay');
+            const emailInput = this.querySelector('input[type="email"]');
+            const emailValue = emailInput.value;
+            
+            // Show loading overlay
+            loadingOverlay.style.display = 'flex';
+            
+            try {
+                const response = await fetch('https://mie.awww.workers.dev/subscribe', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ email: emailValue })
+                });
+                
+                const data = await response.text();
+                
+                // Hide loading overlay
+                loadingOverlay.style.display = 'none';
+                
+                // Show response
+                alert(data);
+                
+                // Clear the email input on success
+                if (response.ok) {
+                    emailInput.value = '';
+                }
+                
+            } catch (error) {
+                // Hide loading overlay
+                loadingOverlay.style.display = 'none';
+                
+                // Show error
+                alert(error.message || JSON.stringify(error));
+                console.error('Error:', error);
+            }
+        });
+    </script>
 </body>
 </html>
