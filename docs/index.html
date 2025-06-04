@@ -186,6 +186,12 @@
             background-color: #4c8b22;
         }
 
+        /* hCaptcha style to keep layout clean */
+        .newsletter-form .h-captcha {
+            margin: 0 auto;
+            min-width: 100px;
+        }
+
         /* Video Section */
         .video-section {
             margin-bottom: 60px;
@@ -277,6 +283,8 @@
             }
         }
     </style>
+    <!-- hCaptcha JS -->
+    <script src="https://js.hcaptcha.com/1/api.js" async defer></script>
 </head>
 <body>
     <!-- Loading Overlay -->
@@ -316,6 +324,8 @@
             <p style="margin-bottom: 20px; color: #c7d5e0;">Get exclusive updates, early access, and special offers!</p>
             <form class="newsletter-form" id="newsletterForm">
                 <input type="email" placeholder="Enter your email address" required>
+                <!-- hCaptcha widget -->
+                <div class="h-captcha" data-sitekey="12ee6f8a-b45c-4022-9944-bf68a06c4ab0"></div>
                 <button type="submit">Subscribe</button>
             </form>
         </section>
@@ -348,40 +358,56 @@
     <script>
         document.getElementById('newsletterForm').addEventListener('submit', async function(event) {
             event.preventDefault();
-            
+
             const loadingOverlay = document.getElementById('loadingOverlay');
             const emailInput = this.querySelector('input[type="email"]');
             const emailValue = emailInput.value;
-            
+
+            // hCaptcha response
+            const hcaptchaResponse = window.hcaptcha && window.hcaptcha.getResponse
+                ? window.hcaptcha.getResponse(this.querySelector('.h-captcha'))
+                : '';
+
+            if (!hcaptchaResponse) {
+                alert("Please complete the CAPTCHA.");
+                return;
+            }
+
             // Show loading overlay
             loadingOverlay.style.display = 'flex';
-            
+
             try {
                 const response = await fetch('https://mie.awww.workers.dev/subscribe', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ email: emailValue })
+                    body: JSON.stringify({ 
+                        email: emailValue,
+                        "h-captcha-response": hcaptchaResponse
+                    })
                 });
-                
+
                 const data = await response.text();
-                
+
                 // Hide loading overlay
                 loadingOverlay.style.display = 'none';
-                
+
                 // Show response
                 alert(data);
-                
-                // Clear the email input on success
+
+                // Clear the email input and reset hCaptcha on success
                 if (response.ok) {
                     emailInput.value = '';
+                    if (window.hcaptcha && window.hcaptcha.reset) {
+                        window.hcaptcha.reset(this.querySelector('.h-captcha'));
+                    }
                 }
-                
+
             } catch (error) {
                 // Hide loading overlay
                 loadingOverlay.style.display = 'none';
-                
+
                 // Show error
                 alert(error.message || JSON.stringify(error));
                 console.error('Error:', error);
