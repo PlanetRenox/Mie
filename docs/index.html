@@ -250,7 +250,8 @@
     </style>
     <!-- hCaptcha JS -->
     <script src="https://js.hcaptcha.com/1/api.js" async defer></script>
-    <script src="https://cdn.jsdelivr.net/npm/qtmodal"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qtmodal@0.3"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qthtml@0.3"></script>
 </head>
 <body>
     <!-- Open Source Bar -->
@@ -314,7 +315,7 @@
     </div>
 
     <script>
-        document.getElementById('newsletterForm').addEventListener('submit', async function(event) {
+        $('#newsletterForm').addEventListener('submit', async function(event) {
             event.preventDefault();
 
             const emailInput = this.querySelector('input[type="email"]');
