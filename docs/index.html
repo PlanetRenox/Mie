@@ -323,9 +323,8 @@
 
             // hCaptcha response
             const hcaptchaResponse = window.hcaptcha && window.hcaptcha.getResponse
-                ? window.hcaptcha.getResponse(this.querySelector('.h-captcha'))
+                ? window.hcaptcha.getResponse()
                 : '';
-
             if (!hcaptchaResponse) {
                 alert("Please complete the CAPTCHA.");
                 return;
@@ -349,7 +348,7 @@
                 const data = await response.text();
 
                 // Hide loading overlay
-                //QTModal.hide()
+                QTModal.hide()
 
                 // Show response
                 alert(data);
