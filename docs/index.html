@@ -253,14 +253,6 @@
     <script src="https://cdn.jsdelivr.net/npm/qtmodal"></script>
 </head>
 <body>
-    <!-- Loading Overlay -->
-    <div class="loading-overlay" id="loadingOverlay">
-        <div style="display: flex; flex-direction: column; align-items: center;">
-            <div class="loading-spinner"></div>
-            <div class="loading-text">Subscribing... (Might take a second)</div>
-        </div>
-    </div>
-
     <!-- Open Source Bar -->
     <div class="open-source-bar">
         <p>🎮 This game is open source! Contribute to development at
@@ -325,7 +317,6 @@
         document.getElementById('newsletterForm').addEventListener('submit', async function(event) {
             event.preventDefault();
 
-            const loadingOverlay = document.getElementById('loadingOverlay');
             const emailInput = this.querySelector('input[type="email"]');
             const emailValue = emailInput.value;
 
@@ -339,8 +330,8 @@
                 return;
             }
 
-            // Show loading overlay
-            loadingOverlay.style.display = 'flex';
+            // Show loading
+            QTModal.show()
 
             try {
                 const response = await fetch('https://mie.awww.workers.dev/subscribe', {
@@ -357,7 +348,7 @@
                 const data = await response.text();
 
                 // Hide loading overlay
-                loadingOverlay.style.display = 'none';
+                QTModal.hide()
 
                 // Show response
                 alert(data);
